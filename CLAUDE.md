@@ -106,6 +106,10 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
   requests an unfamiliar format, the final LaTeX output MUST be filtered
   and adapted to match the exact terminology, scope, and depth of the
   Cambridge 0478 syllabus — never the reverse.
+- **RULE 9 (Topical Routing):** When routing past paper questions into the
+  Knowledge Base, ALWAYS append them to the end of the `Topic_XX_Name.md`
+  file under a clear header. ALWAYS include the source tag (e.g., `>
+  Source: 0478_s20_qp_11, Q3`) so the origin is never lost.
 
 ### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###
 

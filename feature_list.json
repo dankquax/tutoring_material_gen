@@ -89,6 +89,21 @@
         "Executed again 2026-06-25 on explicit instruction: Sessions 001-005 (the prior 'Past Context' line plus 4 full expanded session entries) were rolled into one dense summary paragraph, keeping claude-progress.md's 'Current Verified State' header (which already tracks current blocker/next step independently) intact and unsummarized."
       ],
       "notes": "This is a manual editorial process the agent performs per CLAUDE.md RULE 5 on review or explicit instruction, not an automated script -- 'engine' here means a reliably-followed rule, not literal code. That is sufficient per this feature's stated user-visible behavior, which does not mandate a specific implementation mechanism."
+    },
+    {
+      "id": "FEAT-005",
+      "priority": 5,
+      "area": "knowledge_base",
+      "title": "Semantic Topic Tagger (Past Papers -> Topical KB)",
+      "user_visible_behavior": "The agent (or a specialized Python script) reads a PastPaper_<code>.md file, evaluates each Question/Mark Scheme pair against the 00_syllabus/, and appends the pair into the correct Topic_XX_Name.md file in the knowledge base under a '## Past Paper Questions' heading, preserving the source metadata.",
+      "status": "not_started",
+      "verification": [
+        "Run the topic tagger on one PastPaper markdown file.",
+        "Verify that Topic_XX_Name.md files now contain the questions appended at the bottom.",
+        "Verify no mark schemes were detached from their questions during the move."
+      ],
+      "evidence": [],
+      "notes": "Requires high-intelligence mapping (Sonnet level) to accurately match question text to syllabus topics."
     }
   ]
 }
