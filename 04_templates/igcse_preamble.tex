@@ -1,7 +1,8 @@
 % IGCSE 0478 shared preamble -- structure only, NO topic content.
 % \input this file as the FIRST line of every 05_output/*.tex (it includes
-% \documentclass, so it must come before anything else). Defines the three
-% custom environments every generated document must use exclusively.
+% \documentclass, so it must come before anything else). Defines the six
+% custom environments every generated document must use exclusively, plus
+% the SenpaiCorner house style (watermark, footer, section styling, font).
 % See CLAUDE.md "Strict Separation of Structure and Content".
 \documentclass[11pt]{article}
 
@@ -10,9 +11,46 @@
 \usepackage{tcolorbox}
 \usepackage{enumitem}
 \usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tikz}
+\usetikzlibrary{trees, arrows.meta, positioning, shapes.geometric, fit, calc, backgrounds}
 \usepackage{hyperref}
+\hypersetup{colorlinks=true, urlcolor=blue}
+\usepackage{titlesec}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
 
 \tcbuselibrary{skins, breakable}
+
+% --- SenpaiCorner house style -----------------------------------------------
+\usepackage{draftwatermark}
+\SetWatermarkText{\shortstack{SenpaiCorner\\Mr. Wei}}
+\SetWatermarkScale{0.6}
+\SetWatermarkColor[gray]{0.92}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhead{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\thepage}
+\fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}
+% \maketitle forces the "plain" pagestyle on the title page, which fancyhdr
+% defines as bare page-number-only -- without redefining it too, the title
+% page would silently lose the footer link.
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \fancyfoot[C]{\thepage}%
+  \fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}%
+}
+
+% Section styling applies to starred (unnumbered) commands too -- every
+% generated document uses \section*/\subsection*, never auto-numbered ones,
+% since the syllabus's own numbering (e.g. "1.1 Number systems") is typed
+% directly into the heading text and would otherwise double up.
+\titleformat{\section}{\normalfont\Large\bfseries\color{blue!50!black}}{\thesection.}{0.5em}{}[\titlerule]
+\titleformat{\subsection}{\normalfont\large\bfseries\color{blue!40!black}}{\thesubsection}{0.5em}{}
 
 % stratbox: an exam strategy / technique tip.
 \newtcolorbox{stratbox}[1][Exam Strategy]{
@@ -29,5 +67,25 @@
 % scenario: an applied exam-style scenario or worked example.
 \newtcolorbox{scenario}[1][Scenario]{
   enhanced, breakable, colback=green!5, colframe=green!40!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% learningoutcomes: the syllabus learning objectives a document/week covers.
+\newtcolorbox{learningoutcomes}[1][Learning Objectives]{
+  enhanced, breakable, colback=purple!5, colframe=purple!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% errortrap: a specific, narrow error a student is likely to make in their
+% own working (distinct from critbox's broader conceptual misconception --
+% kept in orange, not critbox's red, so the two read as visually distinct).
+\newtcolorbox{errortrap}[1][Common Error Trap]{
+  enhanced, breakable, colback=orange!5, colframe=orange!70!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% modelans: a worked model answer / marker's thought process for a mark scheme.
+\newtcolorbox{modelans}[1][Model Answer]{
+  enhanced, breakable, colback=gray!5, colframe=gray!60!black,
   fonttitle=\bfseries, title=#1
 }

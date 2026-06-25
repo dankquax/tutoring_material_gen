@@ -1,24 +1,82 @@
-% IGCSE 0478 blueprint demo -- proves the shared preamble's three custom
+% IGCSE 0478 blueprint demo -- proves the shared preamble's six custom
 % environments compile and render distinctly. Not real content; never
 % copy this file's body into 05_output, only its structure/pattern.
 \input{igcse_preamble.tex}
 
-% --- Section skeleton ------------------------------------------------------
-% A generated class-notes file follows this structure (one \subsection per
-% syllabus subsection, e.g. 1.1, 1.2, 1.3). A generated worksheet replaces
-% the \subsection notes body with numbered exam-style questions instead.
+% --- Class-notes section skeleton -------------------------------------------
+% One \subsection per syllabus subsection, e.g. 1.1, 1.2, 1.3 -- content
+% comes from 03_knowledge_base/Topic_XX_Name.md.
 %
 % \input{../04_templates/igcse_preamble.tex}
 % \begin{document}
 % \title{Topic XX: <Topic Name>}
 % \maketitle
-% \section{<Topic Name>}
-%   \subsection{<Syllabus subsection, e.g. 1.1 Number systems>}
+% \section*{<Topic Name>}
+%   \subsection*{<Syllabus subsection, e.g. 1.1 Number systems>}
 %     <content from 03_knowledge_base, as prose/itemize>
 %     \begin{stratbox} ... \end{stratbox}   % optional, only if KB has a tip
 %     \begin{critbox} ... \end{critbox}     % optional, only if KB flags a mistake
 %     \begin{scenario} ... \end{scenario}   % optional, only if KB has a worked example
 %   % TODO: Insufficient source content      <- used verbatim when KB has a gap
+% \end{document}
+
+% --- Worksheet section skeleton ---------------------------------------------
+% Shares the Topic_XX_Name stem with its class notes (see Topic_XX_Name.tex
+% vs. Topic_XX_Name_Worksheet.tex). Content comes from the linked QP/MS
+% Markdown in 03_knowledge_base/PastPaper_<code>.md (## Question <label> /
+% **Question:** ... / **Mark scheme:** ...) -- the question text and the
+% mark scheme are two separate sections so a worksheet can be handed out
+% without the answers, then the mark scheme section added/printed
+% separately.
+%
+% \input{../04_templates/igcse_preamble.tex}
+% \begin{document}
+% \title{Topic XX: <Topic Name> -- Worksheet}
+% \maketitle
+% \section*{Questions}
+%   \begin{enumerate}[leftmargin=*]
+%     \item <question text from PastPaper_<code>.md, marks in [brackets]>
+%       \begin{enumerate}[label=(\alph*)]
+%         \item <sub-part text, one \item per QP label like 1(a), 1(b)>
+%       \end{enumerate}
+%   \end{enumerate}
+%   % TODO: Insufficient source content      <- used verbatim when a QP part has no text
+% \newpage
+% \section*{Mark Scheme}
+%   <one entry per matched question label, in the same order as above>
+%   % TODO: Insufficient source content      <- used verbatim when a part has no MS match
+% \end{document}
+
+% --- Weekly tutoring document skeleton --------------------------------------
+% Driven by a Study Plan in 00_syllabus/*.md (e.g. 6_month_zero_to_hero_plan.md)
+% naming one week's Focus/Topics row. Content for each section is pulled from
+% the Topic_XX_Name.md file(s) that row maps to (per RULE 3 mapping, confirmed
+% against the syllabus). Section order is fixed; do not reorder.
+%
+% \input{../04_templates/igcse_preamble.tex}
+% \begin{document}
+% \title{Week NN: <Focus>}
+% \maketitle
+% \begin{learningoutcomes}
+%   <syllabus objective(s) this week's Topic_XX_Name.md content addresses>
+% \end{learningoutcomes}
+% \section*{Comprehensive Notes}
+%   <content from 03_knowledge_base, as prose/itemize/tables; a TikZ diagram
+%    only where the KB content is itself diagrammatic, e.g. hardware/network
+%    layout -- never invent a diagram for content the KB describes in prose>
+%   \begin{stratbox} ... \end{stratbox}    % optional, only if KB has a tip
+%   \begin{critbox} ... \end{critbox}      % optional, only if KB flags a misconception
+%   \begin{errortrap} ... \end{errortrap}  % optional, only if KB flags a narrow working error
+% \section*{In-Class Worksheet}
+%   <multi-part scenario questions built from the week's PastPaper_<code>.md
+%    entries where available; mark totals come from the MS, never invented>
+% \section*{Homework Assignment}
+%   <one synoptic question, same sourcing rule as above>
+% \newpage
+% \section*{Mark Scheme}
+%   \begin{modelans} ... \end{modelans}    % marker's thought process, per question
+%   <longtable of marking points, sourced from the matched PastPaper_<code>.md MS>
+%   % TODO: Insufficient source content      <- used verbatim when a part has no MS match
 % \end{document}
 
 \begin{document}
@@ -46,5 +104,17 @@ Use this box for a common mistake or misconception pulled from the knowledge bas
 \begin{scenario}
 Use this box for an applied scenario or worked example pulled from the knowledge base.
 \end{scenario}
+
+\begin{learningoutcomes}
+Use this box to list the syllabus learning objective(s) a weekly document addresses.
+\end{learningoutcomes}
+
+\begin{errortrap}
+Use this box for a narrow, specific working error pulled from the knowledge base (distinct from critbox's broader conceptual misconception).
+\end{errortrap}
+
+\begin{modelans}
+Use this box for a marker's worked thought process alongside a mark scheme entry.
+\end{modelans}
 
 \end{document}

@@ -7,40 +7,53 @@ notes and worksheets. You never invent educational content.
 
 ## Startup Workflow
 
-1. Run `pwd` and confirm you are in the repository root.
-2. Read `claude-progress.md` (current state, blocker, next step).
-3. Read `feature_list.json` (exactly one feature should be `in_progress`).
-4. Run `git log --oneline -5`.
-5. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
+1. **Request the Target Prompt or Study Plan first.** Before executing any
+   layout generation, ask the user for the exact Target Prompt or the path
+   to the custom Study Plan (`00_syllabus/*.md`) driving this session's
+   generation. Do not guess or self-select a topic/format to generate.
+2. Run `pwd` and confirm you are in the repository root.
+3. Read `claude-progress.md` (current state, blocker, next step).
+4. Read `feature_list.json` (exactly one feature should be `in_progress`).
+5. Run `git log --oneline -5`.
+6. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
    core directories exist.
-6. Work on the one `in_progress` (or highest-priority `not_started`)
-   feature until it is verified or documented as blocked.
+7. Work on the one `in_progress` (or highest-priority `not_started`)
+   feature, or execute the requested generation against the Target
+   Prompt/Study Plan from step 1, until it is verified or documented as
+   blocked.
 
-## Directory Boundaries (strict, one-way data flow)
+## Directory Boundaries (read-only sources, living working layers)
 
 ```
-01_raw_sources  --(02_parsers/*.py)-->  03_knowledge_base
+01_raw_sources  --(02_parsers/*.py)-->  03_knowledge_base <--(agent edits, RULE 7)
 00_syllabus + 03_knowledge_base + 04_templates  --(agent authoring)-->  05_output
 ```
 
 - `00_syllabus/` — read-only ground truth for *what to generate*. Official
   syllabus PDFs (e.g. Cambridge 0478) and custom study-plan Markdown (e.g.
   `8_week_bootcamp_plan.md`). The agent reads this to decide which topics to
-  pull and how to map sub-topics to Knowledge Base files. Never write here.
+  pull, how to map sub-topics to Knowledge Base files, and to bound the
+  terminology/scope/depth of anything generated. Never write here.
 - `01_raw_sources/` — read-only input. Original syllabus text, past papers,
   mark schemes, class notes (docx/pdf). Scripts and the agent NEVER write
   here.
 - `02_parsers/` — Python scripts. Read ONLY from `01_raw_sources/`. Write
   ONLY into `03_knowledge_base/`. Never write `.tex` directly.
-- `03_knowledge_base/` — clean Markdown, one file per topic, the
-  single source of truth for *content*. The agent reads this and
-  `04_templates/` to write `.tex`; it never edits `01_raw_sources/`.
+- `03_knowledge_base/` — clean Markdown, one file per topic, the single
+  source of truth for *content*. A **living database**, not a frozen
+  parser-only output: the agent may edit these files directly to fix
+  formatting/OCR defects or merge in newly parsed content (see RULE 7). It
+  never edits `00_syllabus/` or `01_raw_sources/`.
 - `04_templates/` — LaTeX blueprints: custom environments (`stratbox`,
   `critbox`, `scenario`) and the structural skeleton for notes/worksheets.
   Templates dictate FORM only — never put topic content in a template.
-- `05_output/` — generated `.tex` (and compiled `.pdf`) files. Anything here
-  must be reproducible from `03_knowledge_base/` + `04_templates/`. Treat
-  as disposable: regenerate, don't hand-patch.
+- `05_output/` — the `.tex` file IS the production deliverable
+  (PDF delivery is out of scope; see MODEL-ROUTING & OUTPUT BOUNDARY
+  POLICY). Structurally agnostic (see RULE 8 / Dynamic Assembly): notes,
+  worksheets, quizzes, bootcamps, standalone mark schemes, anything the
+  prompt asks for. Anything here must be reproducible from
+  `03_knowledge_base/` + `04_templates/`, anchored against `00_syllabus/`.
+  Treat as disposable: regenerate, don't hand-patch.
 - `resources/` is the maintainer's personal harness-template reference
   library (not part of this pipeline). Never treat its contents as syllabus
   source material.
@@ -76,6 +89,43 @@ full mock exam, dictated by a user prompt or a study plan in `00_syllabus/`.
   contains it, consult the official syllabus PDF in `00_syllabus/` first to
   map the concept to its correct topic number before pulling content. Never
   guess the mapping.
+
+### ARCHITECTURE & DATA FLOW ###
+
+See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
+
+- **RULE 7 (KB Refinement):** You may edit files in `03_knowledge_base/`
+  directly if you detect poor formatting, OCR errors, or if instructed to
+  merge new parsed data into an existing topic. This is refinement of
+  presentation, not content invention — the never-hallucinate rule still
+  applies in full to any such edit.
+- **RULE 8 (Syllabus Absolute Authority):** When asked to generate a
+  document in `05_output/`, your FIRST step is to cross-reference the
+  requested topics against the official syllabus in `00_syllabus/`. If the
+  knowledge base contains out-of-scope information, or if the user
+  requests an unfamiliar format, the final LaTeX output MUST be filtered
+  and adapted to match the exact terminology, scope, and depth of the
+  Cambridge 0478 syllabus — never the reverse.
+
+### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###
+
+- **Model routing.** When delegating sub-work (e.g. via the Agent tool),
+  route by task character, not by default:
+  - **Haiku** (low-cost/mechanical): running or writing basic extraction
+    scripts in `02_parsers/`, executing `./compile.sh` for syntax checks,
+    regex/formatting cleanup, token-budget log pruning.
+  - **Sonnet** (high-intelligence/synthesis): complex syllabus mapping
+    from `00_syllabus/`, structure composition/stitching using
+    `04_templates/`, validating source-material fidelity, resolving
+    structural alignment issues.
+- **Output boundary exclusion.** The production target of this engine is
+  solely the `.tex` document in `05_output/`. Final client-facing PDF
+  delivery is out of scope — `./compile.sh` is a passive testing asset
+  that asserts syntax health (exit code 0 / PASS), not a step toward a
+  polished, shippable PDF. Rendering and reading the compiled PDF remains
+  a legitimate internal technique for catching content/layout bugs while
+  authoring, but it is not the deliverable and not a required gate beyond
+  `./compile.sh` reporting success.
 
 ### TOKEN & CONTEXT BUDGETING ###
 
@@ -118,17 +168,19 @@ questions and mark schemes stay linked (e.g.
 
 ## Definition of Done
 
-A feature is `passing` only when ALL of:
+The production deliverable is the `.tex` file in `05_output/`, not a PDF
+(see Output Boundary Exclusion above). A feature is `passing` only when
+ALL of:
 
-1. The relevant `.tex` file compiles via `./compile.sh <file>.tex` to PDF
-   with **zero pdflatex errors**.
+1. The relevant `.tex` file passes `./compile.sh <file>.tex` with a
+   **PASS / exit code 0** result, confirming syntax health.
 2. The `.tex` file contains **zero hallucinated content** — every claim
    traces to `03_knowledge_base/`, or is marked
    `% TODO: Insufficient source content`.
 3. The file uses only the custom environments and structure defined in
    `04_templates/` (no ad-hoc formatting).
-4. `feature_list.json` evidence for that feature records the compile
-   command output (or log excerpt) proving (1).
+4. `feature_list.json` evidence for that feature records the `./compile.sh`
+   PASS output (or log excerpt) proving (1).
 
 ## Before You Stop
 
