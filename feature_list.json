@@ -1,6 +1,6 @@
 {
   "project": "igcse-0478-latex-pipeline",
-  "last_updated": "2026-06-25",
+  "last_updated": "2026-06-25T19:30",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -20,15 +20,22 @@
       "area": "pipeline",
       "title": "End-to-end vertical slice for one topic",
       "user_visible_behavior": "Running the Topic 1 parser on one raw source file produces 03_knowledge_base/Topic_01_Data_Representation.md; the agent then generates 05_output/Topic_01_Data_Representation.tex from that file plus 04_templates/; running ./compile.sh on it produces a PDF with zero pdflatex errors.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Run `python 02_parsers/<script>.py 01_raw_sources/class_notes_docs/1.Data Representation/<file>` and confirm a Topic_01_Data_Representation.md file appears in 03_knowledge_base/.",
         "Ask the agent to generate the Topic 1 class notes .tex from that Markdown and 04_templates/.",
         "Run `./compile.sh 05_output/Topic_01_Data_Representation.tex` and confirm it reports PASS.",
         "Open the PDF and confirm no placeholder/garbled content."
       ],
-      "evidence": [],
-      "notes": "Proves the whole stack is wired together before any breadth work. Must reconcile the official 10-topic syllabus numbering against the 7-folder split in 01_raw_sources/class_notes_docs/ as part of this feature."
+      "evidence": [
+        "py 02_parsers/parse_class_notes_pdf.py '01_raw_sources/class_notes_docs/1.Data Representation/1. Data Representation (1).pdf' --topic 01 --name Data_Representation -> PASS: wrote 03_knowledge_base/Topic_01_Data_Representation.md (587 lines).",
+        "Confirmed Topic 1 = Data representation (1.1 Number systems, 1.2 Text/sound/images, 1.3 Data storage and compression) against 00_syllabus/Cambridge_0478_Syllabus_2026-2028.pdf.",
+        "Created 04_templates/igcse_preamble.tex (stratbox/critbox/scenario via tcolorbox) + igcse_blueprint.tex demo; installed missing TinyTeX packages (tcolorbox, pgf/tikz, enumitem, tikzfill, pdfcol) via tlmgr; verified all 3 environments render distinctly.",
+        "Authored 05_output/Topic_01_Data_Representation.tex from the knowledge-base Markdown, using stratbox for taught methods, critbox for the source's own NOTE warnings (binary shift overflow, 1000 vs 1024), and scenario for its worked examples (188 conversion, two's complement of -78, image/sound file size, GB vs GiB).",
+        "./compile.sh Topic_01_Data_Representation.tex -> PASS: Topic_01_Data_Representation.pdf compiled with zero errors. Visually reviewed all 7 pages: no garbled content, no hallucinated facts, one TODO comment left where the source gives mark-scheme criteria but not a worked sum (binary addition 11101110 + 00110001).",
+        "Fixed two issues found on visual review before this PASS: duplicate subsection numbering (switched section/subsection/subsubsection to starred/unnumbered, since auto-numbering would silently mismatch the syllabus numbering for any topic after Topic 1) and an ASCII-vs-Unicode table overflowing the page margin (added explicit column widths)."
+      ],
+      "notes": "Also moved 01_raw_sources/syllabus/*.pdf to 00_syllabus/ (predated that directory's creation) and installed TinyTeX + pdflatex/python3 fallback-PATH handling in init.sh/compile.sh as session setup, not feature work. templates-001 below still needs its own formal pass (compile.sh is scoped to 05_output/, so the blueprint was verified by calling pdflatex directly, not via compile.sh)."
     },
     {
       "id": "parsing-001",
@@ -36,29 +43,46 @@
       "area": "parsing",
       "title": "Parser converts a raw class-notes file into clean Markdown",
       "user_visible_behavior": "Running a script in 02_parsers/ against a docx/pdf in 01_raw_sources/class_notes_docs/ produces a Topic_XX_Name.md file in 03_knowledge_base/ with formatting artifacts stripped and headings matching the syllabus topic/subtopic structure.",
-      "status": "not_started",
+      "status": "passing",
       "verification": [
         "Run the parser against each class-notes file for one topic.",
         "Confirm output Markdown has no leftover docx/pdf artifacts (page numbers, repeated headers, broken bullets).",
         "Confirm the filename follows Topic_XX_Name.md."
       ],
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        "Generalized 02_parsers/parse_class_notes.py to dispatch on file extension: PDF via the existing pdfplumber heuristics, DOCX via real structural signals (a paragraph is a heading only if ALL its runs are bold; a bullet only if Word's own <w:numPr> list numbering is present; embedded docx tables become real Markdown tables via Document.iter_inner_content() for true document order).",
+        "Ran it against '1. Data Representation (1).pdf' (587 lines, pipeline-001) and then against Data_Representation_Summary.docx for the same topic -- the script detected Topic_01_Data_Representation.md already existed and APPENDED the docx content as a new section (153 lines) instead of overwriting, preserving the already-verified PDF-derived content pipeline-001's .tex depends on.",
+        "Confirmed the docx parser correctly stops at the literal paragraphs 'Worksheet'/'Answers' (a past-paper-reference appendix with no real text, just pasted screenshots, in this department's summary template) -- first attempt wrongly gated the stop check on bold detection, which missed it since that paragraph isn't actually bold in the source XML despite reading as a label; fixed to check the plain text unconditionally.",
+        "Visually reviewed the appended section: real Markdown table from the embedded Word table, correctly nested ## / ### / #### headings from the numbered-section / lettered-substep / bold-label structure, real bullets from numPr detection, no leftover docx artifacts."
+      ],
+      "notes": "Only ran against one topic's two notes sources (PDF + docx); full 10-topic breadth is knowledge_base-001. Diagnostic-test and MCQ docx files in the same folder are assessment materials, not notes, and were intentionally left out of scope."
     },
     {
       "id": "parsing-002",
       "priority": 3,
       "area": "parsing",
       "title": "Parser links a past-paper question paper with its mark scheme",
-      "user_visible_behavior": "Running the past-paper parser on a topical QP/MS pair produces one Markdown file per topic where each question is immediately followed by its mark scheme answer.",
-      "status": "not_started",
+      "user_visible_behavior": "Running the past-paper parser on an official QP/MS pair produces one Markdown file with each question part immediately followed by its mark scheme answer, keyed by question-part label (e.g. 1(c)(ii)).",
+      "status": "passing",
       "verification": [
-        "Run the parser on 01_raw_sources/past_papers/topical/topic 1 - data representation/.",
-        "Confirm each question text is paired with the correct mark scheme points.",
-        "Confirm output filename follows the Topic_XX_Name convention and is distinguishable from the class-notes Markdown for the same topic."
+        "Run the parser on a QP/MS pair under 01_raw_sources/past_papers/<year>/.",
+        "Confirm each question part's text is paired with the correct mark scheme points.",
+        "Confirm output filename is distinguishable from the class-notes Markdown."
       ],
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        "Scope change from the original spec (recorded with user sign-off): 01_raw_sources/past_papers/topical/ (pre-sorted by topic) turned out to be a third-party screenshot compilation with no extractable text layer -- unusable without OCR. 01_raw_sources/past_papers/<year>/ (official Cambridge papers) has real text and clean Question/Answer/Marks structure, but is NOT pre-sorted by topic. Targeted the latter; topic-tagging linked Q&A pairs is a separate, later step.",
+        "Wrote 02_parsers/parse_past_paper.py: QP side segments on sequential main-question numbers + (letter) + (roman) sub-part markers; MS side clusters words into visual rows by top-coordinate proximity (not naive rounding -- a bullet glyph and its text can differ by 2-3pt) and buckets each row into Question/Answer/Marks columns by x-position.",
+        "Ran against 0478_s20_qp_11.pdf + 0478_s20_ms_11.pdf -> 41 question parts, 27 linked to a mark scheme entry with verified-correct content (spot-checked against raw extracted text, including multi-value answers like the two binary conversions in 9(d)(i)).",
+        "Fixed two real bugs found on review: (1) '(i)' is ambiguous between a roman-numeral sub-sub-part and a literal sub-part letter 'i' -- reordered checks so an open lettered sub-part takes priority, fixing 9 previously mis-nested labels; (2) row-clustering by rounded top coordinate was splitting single visual rows apart, silently dropping real answer values (e.g. both binary values in 9(d)(i) were lost) -- switched to proximity-based clustering.",
+        "Of the 14 unmatched parts: most are stem-only scenario intros (correctly shown as '(Scenario introduction... not individually marked)', not a false TODO); Q5/Q6 are tick-grid questions with no recoverable MS match, honestly left as TODO; Q8(c) (tick-grid) did match but lost which checkbox was ticked (the checkmark is a Private-Use-Area symbol-font glyph, recovered as a character but not its column position) -- added a detector that appends an explicit verify-against-source warning rather than presenting that prose as a complete answer.",
+        "Breadth pass (2026-06-25, prompted by 'parse past papers for 2025'): ran the parser against every complete QP/MS pair in 01_raw_sources/past_papers/2025/ -- 6 Paper 1 (theory) papers and 7 Paper 2 (algorithm design and programming) papers. Paper 2 initially matched only 4/25 parts on the first try (vs ~65-70% for Paper 1); root-caused and fixed three real bugs in the *shared* parser rather than forking a Paper-2-specific script, since none were Paper-2-specific in nature: (1) parse_ms() used hardcoded x-position thresholds (label<120, marks>=700) tuned to one paper's column layout, which don't hold across other print runs -- rewrote it to read the real bordered Question/Answer/Marks table directly via pdfplumber.find_tables() (each logical column comes back split into 3 sub-columns by faint internal rulings, so column width is always a multiple of 3); this fixed 0-match papers AND improved the original gold-standard 0478_s20_11 (27->29 matched); (2) is_boilerplate(label_text) was matching bare numeric question labels like '1' or '3' against its page-number regex and silently dropping their MS entries -- removed that check for table-cell text, since stray page-number lines structurally can't appear inside the table grid; (3) parse_qp()'s main-question detector treats a zero-padded pseudocode line-number listing (e.g. '01'..'17' inside an algorithm-tracing question) as a real question number whenever it coincidentally equals the expected next question number, which then hijacks the counter and silently swallows every subsequent real question as a continuation -- fixed by requiring the matched number have no leading zero (real CIE question numbers are never zero-padded).",
+        "Also fixed during the same pass: QP text was polluted by a rotated 'DO NOT WRITE IN THIS MARGIN' watermark (extracted letter-and-word-reversed, one word per line) plus barcode and unmapped symbol-font '(cid:N)' tokens on recent print runs -- added filters for both. Mark schemes using '*' bullets (older papers use '-'/'-') for marking points weren't being split into a Markdown list -- format_answer_cell() now recognises both. Generalised the tick-grid verify-against-source note's wording, since the same Private-Use-Area-glyph detector also fires for Paper 2's pseudocode assignment-arrow glyph (not just tick-box checkmarks).",
+        "Final 2025 breadth result: 0478_m25_12 (43 parts/29 matched), 0478_s25_11 (53/36), 0478_s25_12 (38/27), 0478_w25_11 (47/36), 0478_w25_12 (42/32), 0478_w25_13 (49/35) for Paper 1; 0478_m25_22 (27/20), 0478_s25_21 (27/19), 0478_s25_22 (24/17), 0478_s25_23 (26/21), 0478_w25_21 (29/23), 0478_w25_22 (25/23), 0478_w25_23 (30/18) for Paper 2.",
+        "User then asked what to do about the remaining '% TODO: no matching MS entry found' cases while looking at PastPaper_0478_w25_23.md. Found and fixed two more real bugs in the shared parser: (1) when a sub-part marker shares its physical PDF line with its parent (e.g. '4 (a) Tickets for a theme park...' or '(a) (i) Identify...'), only the parent was being matched -- the sub-part text was silently swallowed into the parent's question text, and its real mark-scheme answer ended up orphaned at the bottom under 'Unmatched Mark Scheme Entries' since no QP label existed to match it against. Fixed parse_qp() to peel off every marker chained at the front of a line, not just the first. (2) is_stem_only's check assumed a scenario-intro stem could never itself end in ')', so lettered stems with roman-numeral children (e.g. '4(c)' before '4(c)(i)/(ii)', or '9(b)' before '9(b)(i)/(ii)') wrongly showed a TODO instead of the correct scenario-introduction note. Fixed by dropping that assumption -- only whether something else nests under the label matters.",
+        "While verifying these fixes, found a third, larger bug: the highest-value question on every Paper 2 paper (a ~15-mark 'write a full program' task) has its mark scheme split across a page break (CIE re-prints the question-number label at the top of the new page's table when this happens), and parse_ms() reset its tracking per table object, so each new page's chunk silently overwrote the previous one -- only the last page's fragment survived, and the discarded fragments leaked out as nonsense orphaned labels (e.g. '0: 1', '7686: ', '300: abnormal') at the bottom of the file. Asked the user whether to fix now or flag as a known limitation; user chose to fix it. Root cause of the orphaned-label leakage was actually nested sub-tables (truth-table grids, tick-grids) returned by find_tables() as their own separate table with an unrelated column count that's still coincidentally a multiple of 3 -- a bare digit in their own data (e.g. a truth table's '0'/'1' output) could coincidentally collide with a real question number and silently overwrite or be miscounted as that question's entry. Fixed by requiring a table to contain its own literal 'Question' header cell to be treated as the genuine grid at all; this single change both (a) makes cross-page accumulation safe (question numbers are unique within one paper, so any same-label match across genuine top-level tables is now guaranteed to be a real continuation, never a coincidental collision) and (b) eliminates the nested-table noise everywhere, not just the one paper it was found in. Verified the apparent 'regression' in raw match-count on 2 papers (s25_23, w25_22) was actually a correctness improvement: those papers had nested-table digit collisions silently producing empty-content phantom matches for real scenario-intro stems (e.g. bare Q2/Q4/Q5/Q6/Q7), which displayed a generic TODO instead of the correct '(Scenario introduction...)' note -- confirmed via direct entries-dict inspection that the old 'matched' entries were empty strings, not real content.",
+        "Re-ran all 13 papers after each fix; gold-standard 0478_s20_11 held at 41/29 throughout (no regression at any step). Final state: every one of the 13 files has zero 'Unmatched Mark Scheme Entries' sections remaining (verified by grep sweep across all PastPaper_0478_*.md), and the multi-page long-answer questions (e.g. m25_22's Question 10) now contain their full mark scheme reassembled across all page chunks."
+      ],
+      "notes": "Output is NOT topic-tagged (PastPaper_<code>.md, flat in 03_knowledge_base/) since one paper spans many topics -- mapping each Q&A pair to a Topic_XX file is unstarted, separate work. The topical/ folder remains unparsed; OCR was explicitly declined as the approach for it. 0478_s25_ms_13.pdf has no matching 0478_s25_qp_13.pdf in 01_raw_sources/ -- that mark scheme is orphaned and was skipped (missing source, not a parser bug)."
     },
     {
       "id": "templates-001",
@@ -138,13 +162,17 @@
       "area": "knowledge_base",
       "title": "All 10 syllabus topics represented in the knowledge base",
       "user_visible_behavior": "03_knowledge_base/ contains one Topic_XX_Name.md per official syllabus topic (01 through 10), each parsed from the corresponding raw sources.",
-      "status": "not_started",
+      "status": "in_progress",
       "verification": [
         "List 03_knowledge_base/ and confirm 10 topic Markdown files matching the official numbering.",
         "Spot-check each file has non-empty, non-placeholder content."
       ],
-      "evidence": [],
-      "notes": "Breadth feature; depends on parsing-001 and parsing-002 being generalized beyond one topic."
+      "evidence": [
+        "Ran parse_class_notes.py against every available class-notes source for Topics 2-6 (Topic 1 already done under pipeline-001): Topic_02_Data_Transmission.md (608 PDF + 77 docx lines), Topic_03_Hardware.md (168 + 125 docx lines), Topic_04_Software.md (183 docx lines), Topic_05_The_Internet_and_Its_Uses.md (353 docx lines), Topic_06_Automated_and_Emerging_Technologies.md (308 docx lines). 6 of 10 topics now present.",
+        "Fixed a second, distinct DOCX heading-detection gap found while reviewing Topic 4's output: is_docx_heading() correctly detected the paragraph as all-bold, but rejected it via its `len(text) <= 80` cap (the real heading was 86 chars) -- 'Worksheet'/'Answers' had been a non-bold gate miss, this was a length-cap miss on an otherwise-correctly-bold heading. Fixed by letting numbered-subsection-pattern text (already matched by SUBSECTION_RE) bypass the length cap. Verified by deleting and re-running Topic 4's parse; '## 4.2 Programming Languages...' now renders correctly.",
+        "Reviewed every topic's output line-by-line for heading-level correctness, table integrity, and stop-marker behavior (same standard as parsing-001/002), not just 'did it produce a file.'"
+      ],
+      "notes": "Breadth feature; depends on parsing-001 and parsing-002 being generalized beyond one topic. Topics 7-10 (Algorithm design, Programming, Databases, Boolean logic) have no raw class-notes sources in 01_raw_sources/ yet -- out of scope until source material is provided. Known open gap carried over from parsing-001/pipeline-001 review: Topic 2's PDF has a multi-column comparison table (Simplex/Half-duplex/Full-duplex) that the PDF path's linear-text extraction garbles; pdfplumber.find_tables() was confirmed to extract it cleanly, but wiring that into pdf_to_markdown_lines() was deferred pending explicit user go-ahead."
     }
   ]
 }

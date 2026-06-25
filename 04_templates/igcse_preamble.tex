@@ -1,0 +1,33 @@
+% IGCSE 0478 shared preamble -- structure only, NO topic content.
+% \input this file as the FIRST line of every 05_output/*.tex (it includes
+% \documentclass, so it must come before anything else). Defines the three
+% custom environments every generated document must use exclusively.
+% See CLAUDE.md "Strict Separation of Structure and Content".
+\documentclass[11pt]{article}
+
+\usepackage[a4paper, margin=2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\tcbuselibrary{skins, breakable}
+
+% stratbox: an exam strategy / technique tip.
+\newtcolorbox{stratbox}[1][Exam Strategy]{
+  enhanced, breakable, colback=blue!5, colframe=blue!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% critbox: a common mistake / misconception warning.
+\newtcolorbox{critbox}[1][Common Mistake]{
+  enhanced, breakable, colback=red!5, colframe=red!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% scenario: an applied exam-style scenario or worked example.
+\newtcolorbox{scenario}[1][Scenario]{
+  enhanced, breakable, colback=green!5, colframe=green!40!black,
+  fonttitle=\bfseries, title=#1
+}

@@ -22,6 +22,13 @@ if [ ! -f "$TEX_PATH" ]; then
   exit 1
 fi
 
+# Fresh TinyTeX installs land here on Windows; fall back to it if a
+# shell restart hasn't picked up the PATH update yet (see init.sh).
+TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
+if [ -d "$TINYTEX_BIN" ]; then
+  PATH="$PATH:$TINYTEX_BIN"
+fi
+
 if ! command -v pdflatex >/dev/null 2>&1; then
   echo "FAIL: pdflatex not found on PATH. Run ./init.sh to check the toolchain." >&2
   exit 1

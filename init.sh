@@ -13,6 +13,14 @@ echo "==> Working directory: $PWD"
 
 status=0
 
+# Fresh TinyTeX installs (https://yihui.org/tinytex/) land here on Windows;
+# the user-PATH update they make often doesn't reach an already-running
+# shell until it's restarted, so fall back to the known install path.
+TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
+if [ -d "$TINYTEX_BIN" ]; then
+  PATH="$PATH:$TINYTEX_BIN"
+fi
+
 check_cmd() {
   local name="$1"
   shift
@@ -28,7 +36,7 @@ check_cmd() {
 }
 
 check_cmd "pdflatex" pdflatex
-check_cmd "python3" python3 python
+check_cmd "python3" python3 python py
 
 echo "==> Ensuring core pipeline directories exist"
 for d in 00_syllabus 01_raw_sources 02_parsers 03_knowledge_base 04_templates 05_output; do
