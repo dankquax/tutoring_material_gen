@@ -1,0 +1,3599 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+02_parsers/.gitkeep
+02_parsers/parse_class_notes.py
+02_parsers/parse_past_paper.py
+02_parsers/requirements.txt
+04_templates/.gitkeep
+04_templates/igcse_blueprint.tex
+04_templates/igcse_preamble.tex
+claude-progress.md
+CLAUDE.md
+clean-state-checklist.md
+compile.sh
+docs/ARCHITECTURE.md
+docs/PIPELINE.md
+evaluator-rubric.md
+feature_list.json
+init.sh
+resources/index.md
+resources/openai-advanced/index.md
+resources/openai-advanced/repo-template/AGENTS.md
+resources/openai-advanced/repo-template/ARCHITECTURE.md
+resources/openai-advanced/repo-template/docs/design-docs/core-beliefs.md
+resources/openai-advanced/repo-template/docs/design-docs/index.md
+resources/openai-advanced/repo-template/docs/DESIGN.md
+resources/openai-advanced/repo-template/docs/exec-plans/active/index.md
+resources/openai-advanced/repo-template/docs/exec-plans/completed/index.md
+resources/openai-advanced/repo-template/docs/exec-plans/tech-debt-tracker.md
+resources/openai-advanced/repo-template/docs/FRONTEND.md
+resources/openai-advanced/repo-template/docs/generated/db-schema.md
+resources/openai-advanced/repo-template/docs/PLANS.md
+resources/openai-advanced/repo-template/docs/PRODUCT_SENSE.md
+resources/openai-advanced/repo-template/docs/product-specs/index.md
+resources/openai-advanced/repo-template/docs/product-specs/new-user-onboarding.md
+resources/openai-advanced/repo-template/docs/QUALITY_SCORE.md
+resources/openai-advanced/repo-template/docs/references/design-system-reference-llms.txt
+resources/openai-advanced/repo-template/docs/references/nixpacks-llms.txt
+resources/openai-advanced/repo-template/docs/references/uv-llms.txt
+resources/openai-advanced/repo-template/docs/RELIABILITY.md
+resources/openai-advanced/repo-template/docs/SECURITY.md
+resources/openai-advanced/repo-template/index.md
+resources/openai-advanced/sops/chrome-devtools-validation-loop.md
+resources/openai-advanced/sops/encode-knowledge-into-repo.md
+resources/openai-advanced/sops/index.md
+resources/openai-advanced/sops/layered-domain-architecture.md
+resources/openai-advanced/sops/observability-feedback-loop.md
+resources/reference/coding-agent-startup-flow.md
+resources/reference/document-budgets.md
+resources/reference/index.md
+resources/reference/initializer-agent-playbook.md
+resources/reference/method-map.md
+resources/reference/prompt-calibration.md
+resources/templates/AGENTS.md
+resources/templates/claude-progress.md
+resources/templates/CLAUDE.md
+resources/templates/clean-state-checklist.md
+resources/templates/evaluator-rubric.md
+resources/templates/feature_list.json
+resources/templates/index.md
+resources/templates/init.sh
+resources/templates/project-harness-prompt.md
+resources/templates/quality-document.md
+resources/templates/session-handoff.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+# Ignore Content Directories (Data & Output)
+00_syllabus/
+01_raw_sources/
+03_knowledge_base/
+05_output/
+
+# Ignore LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.pdf
+
+# Ignore Python artifacts
+__pycache__/
+*.pyc
+.env
+.venv/
+</file>
+
+<file path="02_parsers/.gitkeep">
+
+</file>
+
+<file path="02_parsers/parse_class_notes.py">
+#!/usr/bin/env python3
+"""Parse a class-notes file (PDF or DOCX) in 01_raw_sources/ into clean
+Markdown in 03_knowledge_base/.
+
+Usage:
+    python parse_class_notes.py <input.pdf|.docx> --topic 01 --name Data_Representation
+
+Reads ONLY from 01_raw_sources/. Writes ONLY into 03_knowledge_base/, using
+the Topic_XX_Name.md naming convention (official syllabus numbering -- see
+00_syllabus/). If the target file already exists, the parsed content is
+APPENDED as a new section rather than overwritten, since a topic's
+Markdown is meant to accumulate from multiple raw sources (e.g. a full
+notes PDF and a separate summary docx) without losing earlier work.
+
+PDF heuristics are tuned to this department's notes style: short
+header-like lines, "-"/bullet-glyph exam-style points, and number-table
+blocks for conversions (kept as fenced code blocks).
+
+DOCX extraction relies on real structural signals instead of text shape:
+a paragraph is a heading only if ALL of its text is bold, and a bullet
+only if Word's own list numbering (`<w:numPr>`) is present. Processing
+stops entirely at a paragraph reading exactly "Worksheet" or "Answers" --
+in this department's summary template that marks an appendix of
+past-paper references with no real text (pasted screenshots), not notes
+content.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import docx
+import pdfplumber
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+RAW_SOURCES_DIR = ROOT_DIR / "01_raw_sources"
+KNOWLEDGE_BASE_DIR = ROOT_DIR / "03_knowledge_base"
+
+SUBSECTION_RE = re.compile(r"^\d+\.\d+\s+\S")
+NUMBERED_HEADING_RE = re.compile(r"^\d+\.\s+[A-Z][a-zA-Z ]{2,40}$")
+BULLET_RE = re.compile(r"^[-•●–—«]\s*")
+TABLE_ROW_RE = re.compile(r"^[\d\sA-Fa-f.,+\-=()%]+$")
+DOCX_STOP_HEADINGS = {"worksheet", "answers"}
+
+
+# --- PDF extraction --------------------------------------------------------
+
+def extract_pdf_lines(pdf_path: Path) -> list[str]:
+    lines: list[str] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(x_tolerance=1.5) or ""
+            for raw_line in text.split("\n"):
+                line = raw_line.strip()
+                if line:
+                    lines.append(line)
+    return lines
+
+
+def is_pdf_heading(line: str) -> bool:
+    if BULLET_RE.match(line):
+        return False
+    if TABLE_ROW_RE.match(line):
+        return False
+    if SUBSECTION_RE.match(line):
+        return True
+    word_count = len(line.split())
+    ends_mid_sentence = line.endswith((".", ",", ";")) and not line.endswith("...")
+    return word_count <= 7 and not ends_mid_sentence and line[0].isalpha() and line[0].isupper()
+
+
+def is_table_row(line: str) -> bool:
+    return bool(TABLE_ROW_RE.match(line)) and any(ch.isdigit() for ch in line)
+
+
+def pdf_to_markdown_lines(pdf_path: Path) -> list[str]:
+    lines = extract_pdf_lines(pdf_path)
+    out: list[str] = []
+    table_buffer: list[str] = []
+
+    def flush_table():
+        if table_buffer:
+            out.append("```")
+            out.extend(table_buffer)
+            out.append("```")
+            out.append("")
+            table_buffer.clear()
+
+    # Drop the source's own first line (its title) -- the caller emits its own H1.
+    body = lines[1:] if lines else []
+
+    for line in body:
+        if is_table_row(line):
+            table_buffer.append(line)
+            continue
+        flush_table()
+
+        if SUBSECTION_RE.match(line):
+            out.append(f"## {line}")
+            out.append("")
+        elif NUMBERED_HEADING_RE.match(line) or is_pdf_heading(line):
+            out.append(f"### {line}")
+            out.append("")
+        elif BULLET_RE.match(line):
+            out.append(f"- {BULLET_RE.sub('', line)}")
+        else:
+            out.append(line)
+            out.append("")
+
+    flush_table()
+    return out
+
+
+# --- DOCX extraction --------------------------------------------------------
+
+def is_docx_heading(paragraph) -> bool:
+    runs = [r for r in paragraph.runs if r.text.strip()]
+    if not runs:
+        return False
+    if not all(r.bold for r in runs):
+        return False
+    text = paragraph.text.strip()
+    if len(text) <= 80:
+        return True
+    # Numbered subsection titles (e.g. "4.2 Programming Languages, ...") are
+    # an unambiguous structural marker even when long -- don't drop them
+    # just because the title itself runs past the generic length cap.
+    return bool(SUBSECTION_RE.match(text))
+
+
+def is_docx_list_item(paragraph) -> bool:
+    return "<w:numPr>" in paragraph._p.xml
+
+
+def docx_table_to_markdown(table) -> list[str]:
+    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+    if not rows:
+        return []
+    out = ["| " + " | ".join(rows[0]) + " |", "|" + "|".join(["---"] * len(rows[0])) + "|"]
+    for row in rows[1:]:
+        out.append("| " + " | ".join(row) + " |")
+    out.append("")
+    return out
+
+
+def docx_to_markdown_lines(docx_path: Path) -> list[str]:
+    document = docx.Document(docx_path)
+    out: list[str] = []
+    first_heading_seen = False
+
+    for block in document.iter_inner_content():
+        if isinstance(block, docx.table.Table):
+            out.extend(docx_table_to_markdown(block))
+            continue
+
+        text = block.text.strip()
+        if not text:
+            continue
+
+        # Checked regardless of formatting -- in this department's summary
+        # template, "Worksheet"/"Answers" are NOT bold in the source XML
+        # despite reading visually as section labels, so heading detection
+        # alone won't catch them.
+        if text.lower() in DOCX_STOP_HEADINGS:
+            break
+
+        if is_docx_heading(block):
+            if not first_heading_seen:
+                # Drop the source's own title -- the caller emits its own H1.
+                first_heading_seen = True
+                continue
+            if re.match(r"^\d+\.\d+\s+\S", text):
+                out.append(f"## {text}")
+            elif re.match(r"^\d+\.\s+\S", text):
+                out.append(f"## {text}")
+            elif re.match(r"^[a-z]\.\s+\S", text):
+                out.append(f"### {text}")
+            else:
+                out.append(f"#### {text}")
+            out.append("")
+        elif is_docx_list_item(block):
+            out.append(f"- {text}")
+        else:
+            out.append(text)
+            out.append("")
+
+    return out
+
+
+# --- Shared output ----------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input_file", type=Path, help="Path to a .pdf or .docx under 01_raw_sources/")
+    parser.add_argument("--topic", required=True, help="Two-digit syllabus topic number, e.g. 01")
+    parser.add_argument("--name", required=True, help="Topic name in Topic_XX_Name form, e.g. Data_Representation")
+    args = parser.parse_args()
+
+    input_file = args.input_file.resolve()
+    try:
+        input_file.relative_to(RAW_SOURCES_DIR.resolve())
+    except ValueError:
+        print(f"FAIL: input must be under {RAW_SOURCES_DIR} (got {input_file})", file=sys.stderr)
+        return 1
+    if not input_file.is_file():
+        print(f"FAIL: {input_file} does not exist.", file=sys.stderr)
+        return 1
+
+    suffix = input_file.suffix.lower()
+    if suffix == ".pdf":
+        body_lines = pdf_to_markdown_lines(input_file)
+    elif suffix == ".docx":
+        body_lines = docx_to_markdown_lines(input_file)
+    else:
+        print(f"FAIL: unsupported file type {suffix} (expected .pdf or .docx)", file=sys.stderr)
+        return 1
+
+    if not body_lines:
+        print(f"FAIL: no content extracted from {input_file}.", file=sys.stderr)
+        return 1
+
+    KNOWLEDGE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = KNOWLEDGE_BASE_DIR / f"Topic_{args.topic}_{args.name}.md"
+    title = f"Topic {int(args.topic)}: {args.name.replace('_', ' ')}"
+
+    if output_path.exists():
+        existing = output_path.read_text(encoding="utf-8").rstrip()
+        section = "\n".join([f"## Additional Source: {input_file.name}", ""] + body_lines).rstrip()
+        markdown = existing + "\n\n" + section + "\n"
+        mode = "appended to"
+    else:
+        markdown = "\n".join([f"# {title}", ""] + body_lines).rstrip() + "\n"
+        mode = "wrote"
+
+    output_path.write_text(markdown, encoding="utf-8")
+    print(f"PASS: {mode} {output_path} ({len(body_lines)} new lines from {input_file.name})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="02_parsers/parse_past_paper.py">
+#!/usr/bin/env python3
+"""Link an official Cambridge question paper (QP) with its mark scheme (MS)
+into one Markdown file in 03_knowledge_base/, keyed by question-part label
+(e.g. 1(a), 1(c)(ii)).
+
+Usage:
+    python parse_past_paper.py <qp.pdf> <ms.pdf> --code 0478_s20_11
+
+Reads ONLY from 01_raw_sources/. Writes ONLY into 03_knowledge_base/.
+
+Scope note: targets the official year-by-paper PDFs under
+01_raw_sources/past_papers/<year>/, which have a real text layer. The
+pre-sorted-by-topic 01_raw_sources/past_papers/topical/ folder is a
+third-party screenshot compilation with no extractable text -- it is out
+of scope for this script (would need OCR; see project notes). Output here
+is NOT topic-tagged: a single paper covers many syllabus topics. Mapping
+each linked Q&A pair to a Topic_XX file is a separate, later step.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import pdfplumber
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+RAW_SOURCES_DIR = ROOT_DIR / "01_raw_sources"
+KNOWLEDGE_BASE_DIR = ROOT_DIR / "03_knowledge_base"
+
+PAPER_CODE_RE = re.compile(r"^\d{4}/\d+(/[A-Z]/[A-Z]/\d+)?$")
+PAGE_NUM_RE = re.compile(r"^\d+$")
+DOTTED_BLANK_RE = re.compile(r"\.{5,}")
+BOILERPLATE_RE = re.compile(
+    r"^(PUBLISHED|BLANK PAGE|Question\s+Answer\s+Marks|GENERIC MARKING PRINCIPLE|"
+    r"PhysicsAndMathsTutor\.com|.*UCLES.*|Cambridge IGCSE.*|.*Page \d+ of \d+.*)$",
+    re.IGNORECASE,
+)
+
+# Recent QP printings add a rotated "DO NOT WRITE IN THIS MARGIN" strip down
+# the page edge plus a scan barcode; pdfplumber recovers the watermark as
+# one all-caps word per line (its letters AND word order both reversed --
+# "DO NOT WRITE IN THIS MARGIN" becomes "NIGRAM SIHT NI ETIRW TON OD" before
+# the line-split), and the barcode/some symbol-font glyphs as unmapped
+# "(cid:N)" tokens. Neither carries real content, so both are stripped.
+CID_GLYPH_RE = re.compile(r"\(cid:\d+\)")
+MARGIN_WATERMARK_WORDS = {"NIGRAM", "SIHT", "NI", "ETIRW", "TON", "OD"}
+BARCODE_RE = re.compile(r"^\*\s*\d+\s*\*$")
+
+# Tick-box questions render their checkmark as a symbol-font glyph in the
+# Unicode Private Use Area (e.g. U+F0FC for a Wingdings-style checkbox).
+# Extraction recovers the character itself but not which column/row it was
+# visually aligned to, so 2+ of them signal lost positional information.
+PUA_GLYPH_RE = re.compile(r"[-]")
+
+SUBPART_RE = re.compile(r"^\(([a-z])\)\s+(.*)$")
+SUBSUBPART_RE = re.compile(r"^\(([ivx]+)\)\s+(.*)$")
+MAIN_Q_RE = re.compile(r"^(\d+)\s+([A-Z(].*)$")
+
+
+def is_boilerplate(line: str) -> bool:
+    return bool(
+        PAPER_CODE_RE.match(line)
+        or PAGE_NUM_RE.match(line)
+        or DOTTED_BLANK_RE.search(line)
+        or BOILERPLATE_RE.match(line)
+    )
+
+
+def extract_lines(pdf_path: Path) -> list[str]:
+    """Extracts text lines, dropping boilerplate and stopping entirely once the
+    closing copyright notice is reached (it runs on with no question markers,
+    so nothing after it can be reliably attributed to a question part)."""
+    lines: list[str] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(x_tolerance=1.5) or ""
+            for raw_line in text.split("\n"):
+                line = CID_GLYPH_RE.sub("", raw_line).strip()
+                if line.startswith("Permission to reproduce"):
+                    return lines
+                if not line or line in MARGIN_WATERMARK_WORDS or BARCODE_RE.match(line):
+                    continue
+                if not is_boilerplate(line):
+                    lines.append(line)
+    return lines
+
+
+def parse_qp(lines: list[str]) -> dict[str, str]:
+    """Returns {part_label: question_text}, e.g. {'1(a)': '...', '1(c)(ii)': '...'}."""
+    parts: dict[str, list[str]] = {}
+    current_main = ""
+    current_sub = ""
+    current_label = ""
+    expected_main = 1
+
+    def close_part():
+        if current_label and current_label not in parts:
+            parts[current_label] = []
+
+    for line in lines:
+        remaining = line
+
+        # A main-question marker is only ever the first thing on a line, but
+        # CIE often prints its first sub-part marker right after it on the
+        # *same* line (e.g. "4 (a) Tickets for a theme park..."), so only
+        # peel this off once before falling into the sub/sub-sub loop below.
+        m_main = MAIN_Q_RE.match(remaining)
+        # Programming questions often show line-numbered pseudocode/algorithm
+        # listings ("01", "02", ... "17") for the candidate to trace or
+        # complete. Zero-padded numbers are never real CIE question numbers
+        # but can coincidentally equal expected_main (e.g. listing line "07"
+        # when question 7 hasn't appeared yet), which would otherwise hijack
+        # the counter and silently swallow every following real question as
+        # a continuation of the listing's last line.
+        if m_main and not m_main.group(1).startswith("0") and int(m_main.group(1)) == expected_main:
+            current_main = m_main.group(1)
+            current_sub = ""
+            current_label = current_main
+            expected_main += 1
+            close_part()
+            remaining = m_main.group(2)
+
+        # A sub-part letter and its own first sub-sub-part roman numeral can
+        # likewise share one line (e.g. "(a) (i) Identify..."), so peel off
+        # every marker sitting at the front of what's left, not just one.
+        while True:
+            m_subsub = SUBSUBPART_RE.match(remaining)
+            # "(i)" is ambiguous between a roman-numeral sub-sub-part and a
+            # literal sub-part letter "i" -- once inside a lettered sub-part,
+            # treat an [ivx]+ marker as nesting under it, not as a sibling.
+            if m_subsub and current_main and current_sub:
+                current_label = f"{current_main}({current_sub})({m_subsub.group(1)})"
+                close_part()
+                remaining = m_subsub.group(2)
+                continue
+            m_sub = SUBPART_RE.match(remaining)
+            if m_sub and current_main:
+                current_sub = m_sub.group(1)
+                current_label = f"{current_main}({current_sub})"
+                close_part()
+                remaining = m_sub.group(2)
+                continue
+            break
+
+        if current_label and remaining:
+            parts.setdefault(current_label, []).append(remaining)
+
+    return {label: " ".join(text_lines).strip() for label, text_lines in parts.items()}
+
+
+def format_answer_cell(text: str) -> str:
+    """Turns one Answer cell's raw text (PDF line-wraps preserved as \\n) into
+    either a flowing paragraph (prose with no marking-point bullets) or a
+    Markdown list (lines that start with a dash are separate marking points
+    -- CIE mark schemes write these as e.g. "Any two from: / - Speaker / -
+    Touchscreen"). A non-dash line is folded into whichever group precedes
+    it, since it's a wrapped continuation of that line, not a new point."""
+    raw_lines = [l.strip() for l in text.split("\n") if l.strip()]
+    groups: list[str] = []
+    for line in raw_lines:
+        if re.match(r"^[-−–—•]\s*", line):
+            groups.append(re.sub(r"^[-−–—•]\s*", "- ", line))
+        elif groups:
+            groups[-1] += " " + line
+        else:
+            groups.append(line)
+    return "\n".join(groups)
+
+
+def parse_ms(pdf_path: Path) -> dict[str, dict]:
+    """Returns {part_label: {'answer': str, 'marks': str}}.
+
+    Cambridge mark schemes render the Question/Answer/Marks grid as a real
+    bordered table -- pdfplumber's find_tables() reads it directly off the
+    PDF's own grid lines (each logical column comes back split into 3
+    sub-columns by faint internal rulings, so every row has a width that's a
+    multiple of 3; the real content is the first non-empty cell in each
+    third). This replaces an earlier hardcoded-x-position approach (label
+    x0<120, answer 120<=x0<700, marks x0>=700) that worked for the one paper
+    it was tuned against but silently produced zero matches on others, since
+    different print runs shift the real column edges by tens of points.
+    Nested sub-tables (e.g. a tick-grid or truth-table embedded inside one
+    Answer cell) are returned by find_tables() as their own separate table
+    too, with an unrelated column count that can still coincidentally be a
+    multiple of 3 -- and a bare digit in their own data (e.g. a truth
+    table's "0"/"1" output column) can coincidentally collide with a real
+    question's number. Requiring the table's own literal "Question" header
+    cell confirms it's the genuine grid and not one of these, which also
+    means a long answer that spans a page break -- CIE re-prints the
+    question-number label at the top of the new page's table when this
+    happens -- can be safely glued back onto the same entry instead of one
+    chunk silently overwriting the other.
+    """
+    entries: dict[str, dict] = {}
+    LABEL_RE = re.compile(r"^\d+(\([a-z]+\))*$")
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            for table in page.find_tables():
+                rows = table.extract()
+                if not rows or len(rows[0]) % 3 != 0:
+                    continue
+                col_width = len(rows[0]) // 3
+                has_header = any(
+                    (next((c for c in row[:col_width] if c), "") or "").strip() == "Question"
+                    for row in rows
+                )
+                if not has_header:
+                    continue
+
+                current_label = ""
+                current_answer: list[str] = []
+                current_marks = ""
+
+                def flush():
+                    if not current_label:
+                        return
+                    formatted = "\n".join(current_answer).strip()
+                    if current_label in entries:
+                        entries[current_label]["answer"] = (
+                            entries[current_label]["answer"] + "\n" + formatted
+                        ).strip()
+                        if current_marks and not entries[current_label]["marks"]:
+                            entries[current_label]["marks"] = current_marks
+                    else:
+                        entries[current_label] = {"answer": formatted, "marks": current_marks}
+
+                for row in rows:
+                    label_group = row[:col_width]
+                    answer_group = row[col_width:2 * col_width]
+                    marks_group = row[2 * col_width:]
+                    label_text = (next((c for c in label_group if c), "") or "").strip()
+                    answer_raw = next((c for c in answer_group if c), "") or ""
+                    marks_text = " ".join((next((c for c in marks_group if c), "") or "").split())
+
+                    # No is_boilerplate() check here -- it's tuned for whole
+                    # extracted PDF lines (page numbers, paper codes), and a
+                    # bare single/double-digit question label like "1" or
+                    # "3" satisfies its PAGE_NUM_RE check too, which would
+                    # silently drop that question's MS entry. Table cells
+                    # can't contain stray running-header/footer text in the
+                    # first place (it lives outside the table's grid), so
+                    # the LABEL_RE match below is the only filter needed.
+                    if not label_text and not answer_raw and not marks_text:
+                        continue
+
+                    if LABEL_RE.match(label_text):
+                        flush()
+                        current_label = label_text
+                        current_answer = [format_answer_cell(answer_raw)] if answer_raw else []
+                        current_marks = marks_text
+                    elif current_label and answer_raw:
+                        current_answer.append(format_answer_cell(answer_raw))
+                        if marks_text and not current_marks:
+                            current_marks = marks_text
+                flush()
+
+    return entries
+
+
+def to_markdown(paper_code: str, qp_parts: dict[str, str], ms_entries: dict[str, dict]) -> str:
+    out = [f"# Past Paper {paper_code}: Linked Questions and Mark Scheme", ""]
+
+    def sort_key(label: str):
+        nums = re.findall(r"\d+|[a-z]+", label)
+        return [int(n) if n.isdigit() else n for n in nums]
+
+    # A stem can be a bare main question ("4") or a lettered sub-part that
+    # itself introduces roman-numeral children ("4(c)" before "4(c)(i)") --
+    # only what matters is whether something else nests directly under it.
+    is_stem_only = {
+        label: any(other.startswith(f"{label}(") for other in qp_parts)
+        for label in qp_parts
+    }
+
+    for label in sorted(qp_parts, key=sort_key):
+        question = qp_parts[label]
+        ms = ms_entries.get(label)
+        out.append(f"## Question {label}")
+        out.append("")
+        out.append(f"**Question:** {question}")
+        out.append("")
+        if ms:
+            marks_suffix = f" ({ms['marks']} mark{'s' if ms['marks'] != '1' else ''})" if ms["marks"] else ""
+            out.append(f"**Mark scheme{marks_suffix}:**")
+            out.append("")
+            out.append(ms["answer"] if ms["answer"] else "% TODO: Insufficient source content")
+            if len(PUA_GLYPH_RE.findall(question)) >= 2 or len(PUA_GLYPH_RE.findall(ms["answer"])) >= 2:
+                out.append("")
+                out.append(
+                    "_Note: this question uses a symbol-font glyph that didn't extract "
+                    "as normal text (e.g. a tick-box checkmark, or a pseudocode "
+                    "assignment arrow `<-`) -- some detail may be lost above, verify "
+                    "against the source PDF before using this as a complete answer._"
+                )
+        elif is_stem_only[label]:
+            out.append("_(Scenario introduction for the parts below -- not individually marked.)_")
+        else:
+            out.append("**Mark scheme:** % TODO: Insufficient source content -- no matching MS entry found")
+        out.append("")
+
+    unmatched = sorted(set(ms_entries) - set(qp_parts), key=sort_key)
+    if unmatched:
+        out.append("## Unmatched Mark Scheme Entries (no corresponding QP part found)")
+        out.append("")
+        for label in unmatched:
+            out.append(f"- {label}: {ms_entries[label]['answer']}")
+        out.append("")
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("qp_pdf", type=Path)
+    parser.add_argument("ms_pdf", type=Path)
+    parser.add_argument("--code", required=True, help="Paper code for the output filename, e.g. 0478_s20_11")
+    args = parser.parse_args()
+
+    qp_pdf = args.qp_pdf.resolve()
+    ms_pdf = args.ms_pdf.resolve()
+    for path in (qp_pdf, ms_pdf):
+        try:
+            path.relative_to(RAW_SOURCES_DIR.resolve())
+        except ValueError:
+            print(f"FAIL: input must be under {RAW_SOURCES_DIR} (got {path})", file=sys.stderr)
+            return 1
+        if not path.is_file():
+            print(f"FAIL: {path} does not exist.", file=sys.stderr)
+            return 1
+
+    qp_lines = extract_lines(qp_pdf)
+    qp_parts = parse_qp(qp_lines)
+    ms_entries = parse_ms(ms_pdf)
+
+    if not qp_parts:
+        print(f"FAIL: no question parts detected in {qp_pdf}.", file=sys.stderr)
+        return 1
+
+    markdown = to_markdown(args.code, qp_parts, ms_entries)
+
+    KNOWLEDGE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = KNOWLEDGE_BASE_DIR / f"PastPaper_{args.code}.md"
+    output_path.write_text(markdown, encoding="utf-8")
+
+    matched = sum(1 for label in qp_parts if label in ms_entries)
+    print(f"PASS: wrote {output_path} ({len(qp_parts)} question parts, {matched} matched to a mark scheme entry)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="02_parsers/requirements.txt">
+pdfplumber
+python-docx
+pypdf
+</file>
+
+<file path="04_templates/.gitkeep">
+
+</file>
+
+<file path="clean-state-checklist.md">
+# Clean State Checklist
+
+Run before ending any session or committing.
+
+- [ ] `./init.sh` runs cleanly (or only warns about a toolchain gap already recorded as the blocker).
+- [ ] `./compile.sh` builds the target `.tex` file(s) for this session's feature with **zero pdflatex errors**.
+- [ ] No package is missing from the compile log (`! LaTeX Error: File ... not found`).
+- [ ] Every content claim in any new/changed `05_output/*.tex` traces to a file in `03_knowledge_base/`, or is marked `% TODO: Insufficient source content`.
+- [ ] `03_knowledge_base/` is still organized strictly by syllabus topic (never by "Week" or "Class") — any multi-topic grouping lives only in `05_output/`.
+- [ ] If the generated document followed a study plan or sub-topic mapping, the relevant file in `00_syllabus/` was consulted rather than guessed.
+- [ ] Only environments defined in `04_templates/` were used (no ad-hoc formatting).
+- [ ] `claude-progress.md` Current Verified State and Session Log are up to date.
+- [ ] `feature_list.json` status/evidence reflects what's actually passing (no false `passing` entries).
+- [ ] No half-finished step is left undocumented.
+- [ ] The next session can continue without manual repair.
+- [ ] Ensure `claude-progress.md` has been context-compressed (older entries summarized) if it is growing too long, keeping the total file size minimal.
+</file>
+
+<file path="evaluator-rubric.md">
+# Evaluator Rubric
+
+Use after implementation and before marking a feature `passing`.
+
+| Category | Question | Score (0-2) | Notes |
+| --- | --- | --- | --- |
+| Compilation Success | Does `./compile.sh` report PASS with zero pdflatex errors? |  |  |
+| Template Adherence | Does the `.tex` use only `04_templates/`-defined environments and structure, with no ad-hoc formatting? |  |  |
+| Source Fidelity | Does every content claim trace to `03_knowledge_base/`, with gaps marked `% TODO: Insufficient source content` instead of invented text? |  |  |
+| Maintainability | Does the file follow the `Topic_XX_Name` convention and stay readable/regeneratable for the next session? |  |  |
+
+## Verdict
+
+- Accept
+- Revise
+- Block
+
+## Required Follow-Up
+
+- Missing evidence:
+- Required fixes:
+- Next review trigger:
+</file>
+
+<file path="resources/index.md">
+# English Resource Library
+
+This folder turns the course methods into copy-ready templates and compact
+references you can use in a real repository.
+
+## When To Use It
+
+Start here when you want Codex, Claude Code, or another coding agent to work
+across multiple sessions without constantly re-deriving setup, status, and
+scope.
+
+It is especially useful when:
+
+- work spans multiple sessions
+- features are numerous and easy to leave half-finished
+- agents tend to declare victory too early
+- startup steps are rediscovered every time
+
+## Start Here
+
+For a minimal setup, begin with:
+
+- root instructions: [`templates/AGENTS.md`](./templates/AGENTS.md) or [`templates/CLAUDE.md`](./templates/CLAUDE.md)
+- feature state: [`templates/feature_list.json`](./templates/feature_list.json)
+- progress log: [`templates/claude-progress.md`](./templates/claude-progress.md)
+- bootstrap script reference: `docs/en/resources/templates/init.sh`
+
+Then add:
+
+- session handoff: [`templates/session-handoff.md`](./templates/session-handoff.md)
+- clean-exit checklist: [`templates/clean-state-checklist.md`](./templates/clean-state-checklist.md)
+- evaluator rubric: [`templates/evaluator-rubric.md`](./templates/evaluator-rubric.md)
+
+If you want the fuller OpenAI-style repository structure from the
+"Harness engineering" post, use the advanced pack:
+
+- [`openai-advanced/index.md`](./openai-advanced/index.md)
+
+## Library Structure
+
+- [`templates/`](./templates/index.md): templates to copy into a real repo
+- [`reference/`](./reference/index.md): method notes, startup flow, and failure-mode maps
+- [`openai-advanced/`](./openai-advanced/index.md): advanced repo skeleton,
+  system-of-record docs, and agent-first governance templates
+
+## Recommended Minimal Pack
+
+- `AGENTS.md` or `CLAUDE.md`
+- `feature_list.json`
+- `claude-progress.md`
+- `init.sh`
+
+Those four files are enough to make most agent workflows noticeably more stable.
+
+When the repo grows into a longer-running system with multiple domains, active
+plans, quality scoring, and reliability policies, move up to the
+[`openai-advanced/`](./openai-advanced/index.md) pack instead of stretching the
+minimal pack too far.
+</file>
+
+<file path="resources/openai-advanced/index.md">
+# OpenAI Advanced Pack
+
+This folder packages the more opinionated repository shape described in
+OpenAI's "Harness engineering: leveraging Codex in an agent-first world"
+article into copy-ready starter files.
+
+Use this pack when the minimal harness is no longer enough and your repository
+now needs:
+
+- a short routing-style `AGENTS.md`
+- durable system-of-record docs inside the repo
+- active and completed execution plans
+- explicit product, reliability, security, and frontend policy files
+- quality scoring by product domain and architectural layer
+- model-friendly reference material folders
+- standard operating procedures for architecture, knowledge capture, and runtime validation
+
+## Included Starter Layout
+
+The starter pack under [`repo-template/`](./repo-template/index.md) mirrors the
+structure below:
+
+```text
+AGENTS.md
+ARCHITECTURE.md
+docs/
+├── design-docs/
+│   ├── index.md
+│   └── core-beliefs.md
+├── exec-plans/
+│   ├── active/
+│   ├── completed/
+│   └── tech-debt-tracker.md
+├── generated/
+│   └── db-schema.md
+├── product-specs/
+│   ├── index.md
+│   └── new-user-onboarding.md
+├── references/
+│   ├── design-system-reference-llms.txt
+│   ├── nixpacks-llms.txt
+│   └── uv-llms.txt
+├── DESIGN.md
+├── FRONTEND.md
+├── PLANS.md
+├── PRODUCT_SENSE.md
+├── QUALITY_SCORE.md
+├── RELIABILITY.md
+└── SECURITY.md
+```
+
+## How To Adopt It
+
+1. Start from the minimal pack if your repo is still small.
+2. Copy the files in [`repo-template/`](./repo-template/index.md) into your
+   own repository once you need stronger structure.
+3. Keep `AGENTS.md` short. Treat it as a router into the deeper docs, not as an
+   encyclopedia.
+4. Update the quality, reliability, and plan docs as part of normal work, not
+   as a separate cleanup day.
+5. Keep generated artifacts and external references explicit so agents can find
+   them without relying on chat history.
+
+## SOP Library
+
+The [`sops/`](./sops/index.md) folder turns the article's diagrams into
+step-by-step operating procedures:
+
+- layered domain architecture setup
+- encode unseen knowledge into the repository
+- local observability stack and feedback-loop workflow
+- Chrome DevTools validation loop for UI work
+
+## Design Principles
+
+- Short entrypoint, deeper linked docs
+- Repository as system of record
+- Mechanical checks beat remembered rules
+- Plans and quality history live beside the code
+- Cleanup and simplification are first-class responsibilities
+
+This pack is intentionally opinionated, but it should still be adapted to your
+project rather than copied blindly.
+</file>
+
+<file path="resources/openai-advanced/repo-template/AGENTS.md">
+# AGENTS.md
+
+This repository is optimized for long-running coding-agent work. Keep this file
+short. Use it as the routing layer into the system-of-record docs, not as a
+giant instruction dump.
+
+## Startup Workflow
+
+Before changing code:
+
+1. Confirm the repo root with `pwd`.
+2. Read `ARCHITECTURE.md` for the current system map and hard dependency rules.
+3. Read `docs/QUALITY_SCORE.md` to see which domains or layers are weakest.
+4. Read `docs/PLANS.md`, then open the active plan you are working from.
+5. Read the relevant product spec in `docs/product-specs/`.
+6. Run the standard bootstrap and verification path for this repo.
+7. If baseline verification is failing, repair the baseline before adding scope.
+
+## Routing Map
+
+- `ARCHITECTURE.md`: domain map, layer model, dependency rules
+- `docs/design-docs/index.md`: design decisions and core beliefs
+- `docs/product-specs/index.md`: current product behaviors and acceptance targets
+- `docs/PLANS.md`: plan lifecycle and execution-plan policy
+- `docs/QUALITY_SCORE.md`: product-domain and layer health
+- `docs/RELIABILITY.md`: runtime signals, benchmarks, and restart expectations
+- `docs/SECURITY.md`: secrets, sandbox, data, and external-action rules
+- `docs/FRONTEND.md`: UI constraints, design system rules, accessibility checks
+
+## Working Contract
+
+- Work from one bounded plan or feature slice at a time.
+- Do not mark work done from code inspection alone; runnable evidence is
+  required.
+- If you change behavior, update the matching product, plan, or reliability
+  docs in the same session.
+- If you see repeated review feedback, promote it into a mechanical rule, check,
+  or linter instead of re-explaining it in chat.
+- Keep generated material in `docs/generated/` and source references in
+  `docs/references/`.
+- Prefer adding small, current docs over growing this file.
+
+## Definition Of Done
+
+A change is done only when all of the following are true:
+
+- target behavior is implemented
+- required verification actually ran
+- evidence is linked from the relevant plan or quality document
+- affected docs remain current
+- the repository can restart cleanly from the standard startup path
+
+## End Of Session
+
+Before ending a session:
+
+1. Update the active execution plan.
+2. Update `docs/QUALITY_SCORE.md` if any domain or layer meaningfully changed.
+3. Record new debt in `docs/exec-plans/tech-debt-tracker.md` if you deferred it.
+4. Move finished plans to `docs/exec-plans/completed/` when appropriate.
+5. Leave the repo in a restartable state with a clear next action.
+</file>
+
+<file path="resources/openai-advanced/repo-template/ARCHITECTURE.md">
+# ARCHITECTURE.md
+
+This file is the top-level map of the system. It should stay concise and point
+to deeper documents when needed.
+
+## System Shape
+
+- Product: `[replace with product name]`
+- Primary user workflow: `[replace with main workflow]`
+- Runtime surfaces: `[desktop / web / cli / services / workers]`
+- Source of truth for product behavior: `docs/product-specs/`
+
+## Domain Map
+
+| Domain | Purpose | Primary Entry Points | Related Spec |
+|--------|---------|----------------------|--------------|
+| `[domain-a]` | `[what it owns]` | `[modules / routes / commands]` | `[spec path]` |
+| `[domain-b]` | `[what it owns]` | `[modules / routes / commands]` | `[spec path]` |
+
+## Layer Model
+
+Use a fixed directional model so agents do not invent ad hoc architecture:
+
+`Types -> Config -> Repo -> Service -> Runtime -> UI`
+
+Cross-cutting concerns should enter through explicit provider or adapter
+boundaries instead of reaching across layers directly.
+
+## Hard Dependency Rules
+
+- Lower layers must not depend on higher layers.
+- UI must not bypass runtime or service contracts.
+- Data access must enter through repositories or equivalent adapters.
+- Shared utilities must remain generic and must not accumulate domain logic.
+- New dependencies should be justified in the matching plan or design doc.
+
+## Cross-Cutting Interfaces
+
+| Concern | Approved Boundary | Notes |
+|--------|-------------------|-------|
+| Logging and tracing | `[provider / utility path]` | `[structured only, no ad hoc console use]` |
+| Auth | `[provider path]` | `[token/session rules]` |
+| External APIs | `[client or provider path]` | `[rate limit / retry guidance]` |
+| Feature flags | `[flag boundary]` | `[ownership]` |
+
+## Current Hot Spots
+
+- `[area that is hardest for agents to change safely]`
+- `[area with weak boundaries or fragile tests]`
+
+## Change Checklist
+
+When you touch architecture-relevant code:
+
+1. Update this file if the domain map or allowed boundaries changed.
+2. Update the related design doc in `docs/design-docs/` if the reasoning changed.
+3. Add or update an executable check if the rule should be enforced mechanically.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/design-docs/core-beliefs.md">
+# Core Beliefs
+
+- The repository is the system of record for agents.
+- `AGENTS.md` is a router, not an encyclopedia.
+- Verification evidence matters more than confidence.
+- One bounded task is better than many half-finished tasks.
+- Repeated human feedback should become reusable harness rules.
+- Cleanup and simplification are part of shipping, not afterthoughts.
+- If an agent cannot discover a fact in-repo, treat that fact as operationally unavailable.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/design-docs/index.md">
+# Design Docs Index
+
+Use this index as the discoverable map of design history.
+
+## Accepted
+
+- `core-beliefs.md`: agent-first operating beliefs and durable project norms
+
+## Proposed
+
+- `[add new design doc paths here]`
+
+## Deprecated
+
+- `[move old or superseded design docs here with replacement links]`
+
+## Maintenance Rules
+
+- Every design doc should have an owner or update trigger.
+- Remove stale docs or mark them deprecated instead of letting them drift.
+- Link active execution plans to the design docs they depend on.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/DESIGN.md">
+# DESIGN.md
+
+This file is the design entrypoint. Keep it brief and use it to route into the
+more detailed files under `docs/design-docs/`.
+
+## Purpose
+
+Record durable product and system design decisions that should survive beyond a
+single chat, sprint, or reviewer memory.
+
+## Read This When
+
+- you need the current design philosophy
+- you are about to introduce a new pattern
+- you need to know which design decisions are settled versus still open
+
+## Canonical Design Docs
+
+- `docs/design-docs/index.md`: index of accepted, proposed, and deprecated docs
+- `docs/design-docs/core-beliefs.md`: project-wide agent-first beliefs
+
+## Design Rules
+
+- Keep design docs small and current.
+- Prefer one doc per decision area.
+- Link design docs from plans and specs when a change depends on them.
+- If a design rule becomes operationally critical, promote it into an automated
+  check or update `ARCHITECTURE.md`.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/exec-plans/active/index.md">
+# Active Plans
+
+Keep one markdown file per active execution plan in this folder.
+
+Suggested filename pattern:
+
+- `YYYY-MM-DD-short-topic.md`
+
+Each active plan should be current enough that a fresh agent session can resume
+work from the repository alone.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/exec-plans/completed/index.md">
+# Completed Plans
+
+Move finished plans here instead of deleting them. Completed plans are part of
+the repository memory surface and help later agent runs understand why the code
+looks the way it does.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/exec-plans/tech-debt-tracker.md">
+# Tech Debt Tracker
+
+Use this file for debt that is real, acknowledged, and intentionally deferred.
+
+| Date | Area | Debt | Why Deferred | Risk | Next Trigger |
+|------|------|------|--------------|------|--------------|
+| YYYY-MM-DD | `[area]` | `[debt]` | `[reason]` | `[risk]` | `[when to revisit]` |
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/FRONTEND.md">
+# FRONTEND.md
+
+This file defines stable frontend expectations so agents do not invent UI
+patterns unpredictably.
+
+## UI Principles
+
+- Optimize for clarity before novelty.
+- Keep interaction flows discoverable and restartable.
+- Prefer a small number of reusable components over one-off variants.
+- Accessibility checks are part of normal verification, not polish work.
+
+## Guardrails
+
+- Document the design system or component library in `docs/references/`.
+- Record key user-facing states: empty, loading, success, error, retry.
+- Keep copy, keyboard behavior, and visual hierarchy consistent across flows.
+- When a UI bug is fixed, add or update the matching validation step.
+
+## Verification Expectations
+
+- Capture evidence for critical user journeys.
+- Record browser or runtime validation steps in the relevant plan.
+- If visual regressions are common, standardize screenshot or DOM checks.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/generated/db-schema.md">
+# Database Schema
+
+Use this folder for generated or derived artifacts that agents should be able
+to inspect without reverse-engineering them from code.
+
+## Source
+
+- Generated from: `[command or source path]`
+- Last refreshed: `YYYY-MM-DD`
+
+## Notes
+
+- Do not hand-edit generated sections.
+- Regenerate this file when the underlying schema changes.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/PLANS.md">
+# PLANS.md
+
+This file defines how execution plans are created, updated, completed, and
+archived.
+
+## When A Plan Is Required
+
+Create an execution plan when work:
+
+- spans more than one session
+- changes more than one subsystem
+- has non-trivial verification or rollout risk
+- depends on open decisions that should be logged
+
+## Plan Locations
+
+- `docs/exec-plans/active/`: plans currently driving work
+- `docs/exec-plans/completed/`: finished plans kept for future agent context
+- `docs/exec-plans/tech-debt-tracker.md`: deferred work and follow-ups
+
+## Minimum Plan Sections
+
+- objective
+- scope and out-of-scope
+- verification path
+- risks and blockers
+- progress log
+- open decisions
+
+## Operating Rules
+
+- One active plan should have one clearly owned current step.
+- Update the plan as work progresses; do not treat it as static prose.
+- If a decision changes implementation direction, record it in the plan.
+- Move finished plans to `completed/` so agents can still discover prior context.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/PRODUCT_SENSE.md">
+# PRODUCT_SENSE.md
+
+This file captures durable product judgment that agents cannot infer reliably
+from code alone.
+
+## Product Core
+
+- Primary user: `[replace]`
+- Job to be done: `[replace]`
+- Main frustration to remove: `[replace]`
+- Quality bar for acceptance: `[replace]`
+
+## Product Rules
+
+- Favor user-visible reliability over feature count.
+- Treat ambiguous behavior as a spec gap, not as permission to guess.
+- If implementation changes what users see or trust, update the matching spec.
+- Use product specs for concrete flows, and use this file for cross-cutting
+  product priorities.
+
+## No-Go Patterns
+
+- Hidden destructive actions
+- Silent failure without user feedback
+- Unclear source of truth for visible state
+- Features that cannot be explained in one sentence
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/product-specs/index.md">
+# Product Specs Index
+
+Use this folder for current user-facing behavior specs.
+
+## Active Specs
+
+- `new-user-onboarding.md`
+
+## Rules
+
+- Specs should describe user-visible behavior and acceptance criteria.
+- If implementation diverges from the spec, update one of them in the same
+  session.
+- Keep this index current so a fresh agent can discover product scope quickly.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/product-specs/new-user-onboarding.md">
+# New User Onboarding
+
+## Goal
+
+Describe the first-run experience a new user should have.
+
+## Entry Conditions
+
+- `[state before the flow starts]`
+
+## User Flow
+
+1. `[step one]`
+2. `[step two]`
+3. `[step three]`
+
+## Acceptance Criteria
+
+- `[observable outcome]`
+- `[observable outcome]`
+- `[observable outcome]`
+
+## Failure States
+
+- `[recoverable error and user feedback]`
+- `[blocked state and fallback]`
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/QUALITY_SCORE.md">
+# QUALITY_SCORE.md
+
+This document tracks whether the repository is getting stronger or weaker over
+time.
+
+## Grading Scale
+
+- `A`: verified, legible, stable, boundaries enforced
+- `B`: working with minor gaps
+- `C`: partially working, notable confusion or instability
+- `D`: broken, unsafe, or structurally unclear
+
+## Product Domains
+
+| Domain | Grade | Verification | Agent Legibility | Test Stability | Key Gaps | Last Updated |
+|--------|-------|-------------|-----------------|---------------|----------|-------------|
+| `[domain-a]` | - | - | - | - | - | - |
+| `[domain-b]` | - | - | - | - | - | - |
+| `[domain-c]` | - | - | - | - | - | - |
+
+## Architectural Layers
+
+| Layer | Grade | Boundary Enforcement | Agent Legibility | Key Gaps | Last Updated |
+|-------|-------|---------------------|-----------------|----------|-------------|
+| Types | - | - | - | - | - |
+| Services | - | - | - | - | - |
+| Runtime | - | - | - | - | - |
+| UI | - | - | - | - | - |
+
+## Benchmark Snapshots
+
+| Date | Harness Variant | Completion Rate | Retries | Defects Before Review | Notes |
+|------|-----------------|----------------|--------|-----------------------|------|
+| YYYY-MM-DD | `[baseline / improved / simplified]` | - | - | - | - |
+
+## Simplification Log
+
+| Date | Component Removed | Outcome | Decision |
+|------|-------------------|---------|----------|
+| YYYY-MM-DD | `[component]` | `[degraded / unchanged]` | `[restore / keep removed]` |
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/references/design-system-reference-llms.txt">
+Purpose: store model-friendly reference material for the design system.
+
+Suggested contents:
+- component naming rules
+- spacing and typography tokens
+- state variants
+- accessibility expectations
+
+Keep this file concise and refresh it when the upstream design system changes.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/references/nixpacks-llms.txt">
+Purpose: store a clean agent-readable extract of the deployment or packaging
+rules your repository depends on.
+
+Suggested contents:
+- build entrypoints
+- runtime assumptions
+- environment variable expectations
+- common failure signatures
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/references/uv-llms.txt">
+Purpose: store a compact reference for your Python package and environment
+workflow when `uv` or similar tooling matters to the repo.
+
+Suggested contents:
+- install and sync commands
+- lockfile policy
+- virtualenv expectations
+- verification commands
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/RELIABILITY.md">
+# RELIABILITY.md
+
+This file defines how the system proves it is healthy and restartable.
+
+## Standard Paths
+
+- Bootstrap: `[command]`
+- Verification: `[command]`
+- Start app or service: `[command]`
+- Debug or inspect runtime: `[command]`
+
+## Required Runtime Signals
+
+- structured logs for startup and critical flows
+- health checks for key services
+- trace or timing data for slow paths when available
+- user-visible error states for recoverable failures
+
+## Golden Journeys
+
+- `[journey 1]`
+- `[journey 2]`
+- `[journey 3]`
+
+Each golden journey should have a repeatable verification path and clear failure
+signals.
+
+## Reliability Rules
+
+- No feature is complete if the system cannot restart cleanly afterward.
+- Runtime failures should be diagnosable from repo-local signals.
+- If a repeated failure mode appears, add a benchmark or guardrail for it.
+- Cleanup is part of reliability, not a separate concern.
+</file>
+
+<file path="resources/openai-advanced/repo-template/docs/SECURITY.md">
+# SECURITY.md
+
+This file defines the security and safety rules that agents must not guess at.
+
+## Secrets And Credentials
+
+- Never hard-code secrets in source or docs.
+- Document approved secret-loading paths here.
+- Redact tokens, API keys, and personal data from logs and screenshots.
+
+## Untrusted Input
+
+- Treat external content as untrusted until validated.
+- Record allowed fetch or execution boundaries here.
+- If prompt injection or command injection risk exists, document the guardrail.
+
+## External Actions
+
+- List which actions require explicit approval.
+- Record any production or destructive commands that agents must not run by default.
+- Prefer sandbox-safe workflows for debugging and verification.
+
+## Dependency And Review Rules
+
+- New dependencies need justification in the active plan.
+- Security-sensitive changes require explicit verification steps.
+- Repeated security review comments should become checks, not tribal knowledge.
+</file>
+
+<file path="resources/openai-advanced/repo-template/index.md">
+# Advanced Repo Template
+
+Copy this starter into a real repository when you want an OpenAI-style
+agent-first documentation surface instead of only a minimal harness.
+
+## Copy Order
+
+1. Copy `AGENTS.md` and `ARCHITECTURE.md` to the repo root.
+2. Copy the whole `docs/` tree.
+3. Fill in `docs/PRODUCT_SENSE.md`, `docs/QUALITY_SCORE.md`, and
+   `docs/RELIABILITY.md` first.
+4. Add your first active plan under `docs/exec-plans/active/`.
+5. Keep the entrypoint files short and route detail into the linked docs.
+
+## What This Template Optimizes For
+
+- durable repo-local context
+- progressive disclosure instead of one giant instruction file
+- explicit plan lifecycle
+- quality tracking over time
+- readable boundaries for agents and humans
+
+Treat every file here as a starter. Replace placeholders, examples, and sample
+commands with your real project specifics before relying on it.
+</file>
+
+<file path="resources/openai-advanced/sops/chrome-devtools-validation-loop.md">
+# SOP: Chrome DevTools Validation Loop
+
+Use this SOP when UI work depends on actual runtime interaction and screenshots,
+DOM state, and console output matter more than code inspection alone.
+
+## Goal
+
+Turn UI validation into a repeatable interaction loop the agent can run until
+the journey is clean.
+
+## Core Loop
+
+1. Select the target page or app instance.
+2. Clear stale console noise.
+3. Capture the BEFORE state.
+4. Trigger the UI path.
+5. Observe runtime events during interaction.
+6. Capture the AFTER state.
+7. Apply the fix and restart the app if needed.
+8. Re-run validation until the journey is clean.
+
+## Required Inputs
+
+- a stable startup command
+- a reproducible UI journey
+- a way to snapshot DOM, console, or screenshots
+- a rule for what counts as "clean"
+
+## Execution SOP
+
+1. Write the target journey in the active plan.
+2. Define success in observable terms: text present, button enabled, error gone,
+   console clean, request succeeded.
+3. Snapshot the initial state before interaction.
+4. Trigger exactly one path at a time.
+5. Record runtime events, DOM changes, and visible output.
+6. If the journey fails, fix the smallest responsible layer and restart.
+7. Re-run the same path and compare BEFORE/AFTER evidence.
+
+## Clean Criteria
+
+- intended visible state is present
+- unexpected errors are absent
+- console noise is understood or cleared
+- rerunning the same path gives the same result
+
+## Repo Artifacts To Update
+
+- active execution plan
+- `docs/RELIABILITY.md` if the journey becomes a golden path
+- product spec if the visible behavior changed
+</file>
+
+<file path="resources/openai-advanced/sops/encode-knowledge-into-repo.md">
+# SOP: Encode Unseen Knowledge Into The Repo
+
+Use this SOP when important context still lives in Google Docs, chat threads,
+tickets, or people's heads.
+
+## Goal
+
+Make agent-invisible knowledge discoverable in the codebase so a fresh session
+can act on it without relying on prior conversation.
+
+## Trigger Signals
+
+- The agent keeps asking how the system works.
+- Humans say "we decided this in Slack" or "follow what X said last week."
+- Reviews reference product or security rules that are not written in-repo.
+- New sessions repeat discovery work that should already be settled.
+
+## Execution SOP
+
+1. List the invisible knowledge sources: docs, chats, tacit team rules, verbal decisions.
+2. For each source, ask: is this architecture, product behavior, security policy,
+   reliability expectation, plan context, or reference material?
+3. Encode it into the matching repo artifact:
+   - architecture -> `ARCHITECTURE.md`
+   - product behavior -> `docs/product-specs/`
+   - design rationale -> `docs/design-docs/`
+   - execution state -> `docs/exec-plans/`
+   - repeated external references -> `docs/references/`
+   - quality or reliability expectations -> `docs/QUALITY_SCORE.md` or `docs/RELIABILITY.md`
+4. Replace vague statements with operationally useful wording.
+5. Remove or deprecate stale copies so the repo keeps one discoverable truth.
+
+## Good Encoding Rules
+
+- Write for discoverability, not for literary completeness.
+- Prefer short documents with clear filenames.
+- Link related artifacts together.
+- Store durable rules, not meeting transcripts.
+- Update the repo in the same session that the decision is made.
+
+## Definition Of Done
+
+- A fresh agent can discover the relevant rule without asking a human.
+- The same fact is not scattered across multiple contradictory files.
+- The new artifact lives close to the code or workflow it governs.
+</file>
+
+<file path="resources/openai-advanced/sops/index.md">
+# OpenAI Advanced SOPs
+
+These SOPs translate the article's operating patterns into concrete execution
+playbooks you can follow or adapt.
+
+## Included SOPs
+
+- [`layered-domain-architecture.md`](./layered-domain-architecture.md):
+  establish explicit layers and cross-cutting boundaries
+- [`encode-knowledge-into-repo.md`](./encode-knowledge-into-repo.md):
+  move invisible knowledge from chat, docs, and memory into repo-local files
+- [`observability-feedback-loop.md`](./observability-feedback-loop.md):
+  give agents logs, metrics, traces, and a repeatable debug loop
+- [`chrome-devtools-validation-loop.md`](./chrome-devtools-validation-loop.md):
+  use browser automation and snapshots to validate UI behavior until clean
+
+## How To Use Them
+
+1. Pick the SOP that matches your current bottleneck.
+2. Use the checklist to set up the missing artifacts or tooling.
+3. Encode the resulting rules into your copied `repo-template/` docs.
+4. Convert repeated review comments into checks, scripts, or guardrails.
+
+These are not meant to be followed blindly. They are meant to make the harness
+more legible, enforceable, and repeatable.
+</file>
+
+<file path="resources/openai-advanced/sops/layered-domain-architecture.md">
+# SOP: Layered Domain Architecture
+
+Use this SOP when the agent keeps violating boundaries, duplicating logic across
+layers, or producing code that becomes hard to review after a few sessions.
+
+## Goal
+
+Make domain boundaries explicit enough that agents can move quickly without
+silently degrading structure.
+
+## Target Model
+
+Within a business domain, prefer this directional flow:
+
+`Types -> Config -> Repo -> Service -> Runtime -> UI`
+
+Cross-cutting concerns should enter through explicit providers or adapters.
+Shared utils stay outside the domain and should not accumulate domain logic.
+
+## Setup Checklist
+
+- Define the current domains in `ARCHITECTURE.md`.
+- Write allowed dependency directions in `ARCHITECTURE.md`.
+- Record cross-cutting interfaces such as auth, telemetry, and external APIs.
+- Add one short note for the hardest current boundary violation.
+- Decide what should be enforced mechanically by lint, tests, or scripts.
+
+## Execution SOP
+
+1. Map the codebase into domains before touching implementation style.
+2. For each domain, identify the allowed layer sequence.
+3. Identify all cross-cutting concerns and route them through providers or adapters.
+4. Move ambiguous shared logic either into the owning domain or into truly generic utils.
+5. Document the rules in `ARCHITECTURE.md`.
+6. Add one executable guardrail for the highest-cost violation.
+7. Update quality scoring after the change.
+
+## Definition Of Done
+
+- A fresh agent can tell which layer owns a change.
+- UI code no longer reaches into repo or external side effects directly.
+- Cross-cutting concerns have named entry points.
+- At least one important boundary is enforced mechanically.
+
+## Repo Artifacts To Update
+
+- `ARCHITECTURE.md`
+- `docs/QUALITY_SCORE.md`
+- `docs/design-docs/` when the rationale changed
+- `docs/PLANS.md` or the active execution plan
+</file>
+
+<file path="resources/openai-advanced/sops/observability-feedback-loop.md">
+# SOP: Observability Feedback Loop
+
+Use this SOP when debugging is slow, agents keep claiming success without
+evidence, or runtime behavior is harder to inspect than the code itself.
+
+## Goal
+
+Give the agent a local feedback loop over logs, metrics, traces, and runnable
+workloads so it can reason from execution, not only from code inspection.
+
+## Minimum Stack
+
+- application emits structured logs
+- application emits metrics and traces when feasible
+- local fan-out or collection layer
+- query interfaces for logs, metrics, and traces
+- repeatable workload or user journey to rerun after each change
+
+## Execution SOP
+
+1. Define the golden runtime journeys that matter most.
+2. Add structured logs to startup and the critical path.
+3. Add metrics for latency, failure counts, or queue depth where useful.
+4. Add traces or timing markers for slow or multi-step flows.
+5. Make the signals queryable from the local dev environment.
+6. Give the agent one repeatable workload or scenario to rerun.
+7. Require the loop: query -> correlate -> reason -> implement -> restart ->
+   rerun -> verify.
+
+## Debug Session Checklist
+
+- What failed?
+- Which signal proves the failure?
+- Which layer owns the failure?
+- What changed after the fix?
+- Did the app restart cleanly?
+- Did the same workload pass after rerun?
+
+## Definition Of Done
+
+- The agent can explain a failure mode from runtime evidence.
+- The same workload can be rerun after each change.
+- Restart and rerun are part of the normal task loop.
+- Reliability signals are documented in `docs/RELIABILITY.md`.
+</file>
+
+<file path="resources/reference/coding-agent-startup-flow.md">
+# Coding Agent Startup Flow
+
+Use this at the beginning of every session after initialization is complete.
+
+## Fixed Startup Template
+
+1. Run `pwd` and confirm the repository root.
+2. Read `claude-progress.md`.
+3. Read `feature_list.json`.
+4. Review recent commits with `git log --oneline -5`.
+5. Run `./init.sh`.
+6. Run a baseline smoke or end-to-end path.
+7. If the baseline is broken, fix that first.
+8. Select the highest-priority unfinished feature.
+9. Work only on that feature until it is verified or explicitly blocked.
+
+## Why This Order Matters
+
+- `pwd` prevents accidental work in the wrong directory.
+- progress and feature files recover durable state before new edits begin.
+- recent commits explain what changed most recently.
+- `init.sh` standardizes startup instead of relying on memory.
+- baseline verification catches broken starting states before new work hides
+  them.
+
+## End-Of-Session Mirror
+
+The same session should end by:
+
+1. recording progress
+2. updating feature state
+3. writing a handoff if needed
+4. committing safe work
+5. leaving a clean restart path
+</file>
+
+<file path="resources/reference/document-budgets.md">
+# Document Size Budgets
+
+Harness artifacts solve cold-start confusion and weak handoff (see
+`method-map.md`), but every artifact that grows unboundedly across sessions
+becomes the next session's cold-start problem: a 3,500-word progress log is
+no easier to "read first" than no progress log at all. This note adds a
+budget to the failure mode method-map.md doesn't cover: **document bloat**.
+
+## The Tiers
+
+| Tier | What | Example files | Why this size |
+| --- | --- | --- | --- |
+| A — Operational pulse | Read every session, must stay skimmable | `claude-progress.md` (900w), `session-handoff.md` (300w), `clean-state-checklist.md` (150w) | If it takes longer to read than to re-derive, it has failed its purpose |
+| B — Bounded record fields | Per-unit fields inside a larger file | `feature_list.json` `notes` (40w/feature), `evidence` (200w/feature) | One feature's history shouldn't crowd out the rest of the file |
+| C — Standing reference | Read occasionally, sets durable rules | `AGENTS.md`/`CLAUDE.md` (700w), `docs/ARCHITECTURE.md`/`PRODUCT.md`/`RELIABILITY.md` (800w), `evaluator-rubric.md`/`quality-document.md` (500w), skill files (600w) | Instructions agents must hold in working memory every session |
+| D — Per-feature design docs | One per feature, written once | `docs/PRD_*.md` (1200w) | Enough room for a real design discussion without becoming the implementation |
+| E — User-facing guide | Comprehensive but still capped | `USER_GUIDE.md` (2000w) | Largest allowance; trim sections for superseded features instead of just appending |
+
+The same tiers apply to this resource library itself: `resources/templates/*.md`
+(1200w) and `resources/reference/*.md` (900w). `resources/openai-advanced/`
+is excluded — it's an external reference pack this project doesn't generate
+or maintain.
+
+`scripts/check-doc-budgets.mjs` is the enforced source of truth for the
+exact numbers; this table is the explanation. If they ever disagree, the
+script wins — update it, not just this doc.
+
+## The Reaudit Pipeline
+
+Two parts, layered:
+
+1. **Stop hook** (automatic): fires when a session ends, runs
+   `node scripts/check-doc-budgets.mjs`, and prints a non-blocking warning
+   listing any file over budget. It never edits anything — hooks run shell
+   commands, not model calls, so compaction needs a model.
+2. **`/reaudit-harness` skill** (the actual compaction): spawns a low-cost
+   model subagent (same Haiku-via-subagent pattern as `/discuss`) to rewrite
+   each over-budget file more concisely. The skill must preserve every fact
+   that proves a feature's status (evidence, blockers, verification
+   results) — it may compact narrative and prose, but it must never delete
+   or soften proof, per the existing "do not hide unfinished work" rule.
+
+Run `/reaudit-harness` as part of "Before You Stop," not mid-feature — it
+should never compete with the active feature for attention.
+
+## Why a Budget, Not Just "Be Concise"
+
+"Be concise" is unenforceable and the first instruction an agent drops under
+pressure to document thoroughly. A number is checkable by a script, and a
+script is what makes the Stop hook possible at all.
+</file>
+
+<file path="resources/reference/index.md">
+# English Reference
+
+These notes explain how to use the templates as a working harness instead of a
+loose pile of files.
+
+## Internal Reference Notes
+
+- [`method-map.md`](./method-map.md): map common long-running failure modes to
+  the artifact or policy that addresses them first
+- [`initializer-agent-playbook.md`](./initializer-agent-playbook.md): what the
+  initializer should leave behind before feature work starts
+- [`coding-agent-startup-flow.md`](./coding-agent-startup-flow.md): fixed
+  session-start flow for later coding runs
+- [`prompt-calibration.md`](./prompt-calibration.md): how to keep root
+  instructions sharp without making them bloated and brittle
+- [`document-budgets.md`](./document-budgets.md): word-count budgets per
+  artifact and the reaudit pipeline that enforces them
+
+## Primary Articles
+
+This list is intentionally narrow. A harness means the execution system around
+the model: the agent loop, tool execution, sandboxing, state, context,
+verification, termination, orchestration, and observability. General prompt
+engineering or broad agent-framework articles do not belong in the primary
+list.
+
+The original three articles remain the backbone of the course:
+
+- [OpenAI: Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/) (2026-02-11): repo-local context, custom linting, structural guardrails.
+- [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (2025-11-26): initializer/coding agent, feature list, progress log, handoff across context windows.
+- [Anthropic: Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps) (2026-03-24): planner/generator/evaluator roles, context resets, harness simplification.
+
+Only a few highly relevant 2026 articles are added:
+
+- [OpenAI: Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/) (2026-01-23): the Codex runtime harness, tool calls, context growth, loop termination.
+- [Anthropic: Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) (2026-01-09): evaluating model and harness together; evaluation harnesses vs. agent harnesses.
+- [LangChain: Improving Deep Agents with harness engineering](https://www.langchain.com/blog/improving-deep-agents-with-harness-engineering) (2026-02-17): holding the model fixed while improving prompts, tools, middleware, tracing, and self-verification — Top 30 to Top 5 on Terminal Bench 2.0.
+- [Thoughtworks / Martin Fowler: Harness engineering for coding agent users](https://martinfowler.com/articles/harness-engineering.html) (2026-04-02): user harnesses as feedforward guides and feedback sensors, with deterministic and inferential controls.
+- [Cursor: Continually improving our agent harness](https://cursor.com/blog/continually-improving-agent-harness) (2026-04-30): the harness as a continuously improved product — offline evals, online metrics, tool-error taxonomy, model-specific tuning, mid-chat model switching.
+
+## 2026 Extended References
+
+These are not core course sources, but they are useful when designing specific
+harness modules. This section only keeps sources whose body directly covers the
+agent loop, tool execution, context management, verification, sandboxing,
+control layers, or regression governance. Pure agent products, platform
+announcements, team case studies, and benchmarks are excluded.
+
+- [OpenAI: Unlocking the Codex harness: how we built the App Server](https://openai.com/index/unlocking-the-codex-harness/) (2026-02-04): the harness as a reusable App Server protocol — thread lifecycle, resume, fork, diffs, client integrations.
+- [OpenAI Developers: Run long horizon tasks with Codex](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex) (2026-02-23): durable project memory, milestone validation, done-when examples.
+- [OpenAI: The next evolution of the Agents SDK](https://openai.com/index/the-next-evolution-of-the-agents-sdk/) (2026-04-15): model-native harnesses, sandbox execution, file/command execution.
+- [OpenAI: An open-source spec for Codex orchestration: Symphony](https://openai.com/index/open-source-codex-orchestration-symphony/) (2026-04-27): turning an issue tracker into a multi-agent control plane.
+- [Anthropic: Building a C compiler with a team of parallel Claudes](https://www.anthropic.com/engineering/building-c-compiler) (2026-02-05): parallel agent teams, task locks, git sync, container isolation, autonomous loops.
+- [Anthropic: Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) (2026-04-08): separating session, harness, and sandbox as swappable interfaces.
+- [Anthropic: An update on recent Claude Code quality reports](https://www.anthropic.com/engineering/april-23-postmortem) (2026-04-23): reasoning effort and context pruning as harness changes needing regression governance.
+- [LangChain: Context Management for Deep Agents](https://www.langchain.com/blog/context-management-for-deepagents) (2026-01-28): filesystem offloading, tool-call truncation, summarization, targeted evals.
+- [LangChain: Tuning Deep Agents to Work Well with Different Models](https://www.langchain.com/blog/tuning-deep-agents-different-models) (2026-04-29): model-specific harness profiles for prompts, tools, middleware, subagents.
+- [LangChain: Continual learning for AI agents](https://www.langchain.com/blog/continual-learning-for-ai-agents) (2026-04-05): splitting agent improvement into model, harness, and context layers via traces.
+- [Microsoft: Agent Harness in Agent Framework](https://devblogs.microsoft.com/agent-framework/agent-harness-in-agent-framework/) (2026-03-12): shell/filesystem harnesses, approval flow, context compaction.
+- [Google: Announcing ADK for Java 1.0.0](https://developers.googleblog.com/announcing-adk-for-java-100-building-the-future-of-ai-agents-in-java/) (2026-03-30): plugins, event compaction, HITL, session/memory services, A2A primitives.
+- [GitHub: Automate repository tasks with GitHub Agentic Workflows](https://github.blog/ai-and-ml/automate-repository-tasks-with-github-agentic-workflows/) (2026-02-13): GitHub Actions as an agentic workflow runner — safe outputs, sandboxing, review.
+- [AWS: AI agents in enterprises: Best practices with Amazon Bedrock AgentCore](https://aws.amazon.com/blogs/machine-learning/ai-agents-in-enterprises-best-practices-with-amazon-bedrock-agentcore/) (2026-02-03): harness layers across Runtime, Memory, Gateway, Identity/Policy, Observability, Evaluations.
+- [Stripe: Minions: Stripe's one-shot, end-to-end coding agents](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents) (2026-02-09) and [Part 2](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2) (2026-02-19): devbox isolation, blueprint state machines, MCP tool curation, pre-push/CI feedback.
+- [Cognition: What We Learned Building Cloud Agents](https://cognition.ai/blog/what-we-learned-building-cloud-agents) (2026-04-23): VM isolation, session snapshot/resume, governance, audit logging.
+- [Cognition: Multi-Agents: What's Actually Working](https://cognition.ai/blog/multi-agents-working) (2026-04-22): generator-verifier loops, clean-context reviewers, manager-child coordination.
+- [Replit: Decision-Time Guidance: Keeping Replit Agent Reliable](https://blog.replit.com/decision-time-guidance) (2026-01-20, updated 2026-01-23): a lightweight classifier injects guidance at the decision point instead of bloating the system prompt.
+- [Vercel: How we made v0 an effective coding agent](https://vercel.com/blog/how-we-made-v0-an-effective-coding-agent) (2026-01-07): dynamic system prompts, a streaming rewrite layer, model-driven autofixers.
+- [Vercel: Introducing deepsec](https://vercel.com/blog/introducing-deepsec-find-and-fix-vulnerabilities-in-your-code-base) (2026-05-04): a security-focused harness — scan, investigate, revalidate, export, refusal-checker steps.
+- [Sourcegraph: CodeScaleBench](https://sourcegraph.com/blog/codescalebench-testing-coding-agents-on-large-codebases-and-multi-repo-software-engineering-tasks) (2026-03-03): MCP tool adoption, tool-use transcripts, verifier/reproducibility gates, prompt iteration.
+
+Strictly 2025-only general references are excluded from the primary list. The
+original 2025 Anthropic harness article remains because it is a foundation
+source for the course.
+
+## Suggested Reading Order
+
+1. `method-map.md`
+2. `initializer-agent-playbook.md`
+3. `coding-agent-startup-flow.md`
+4. `prompt-calibration.md`
+5. OpenAI Harness engineering
+6. Anthropic Effective harnesses
+7. Anthropic Harness design for long-running application development
+8. OpenAI Codex agent loop
+9. Anthropic agent evals
+10. LangChain Improving Deep Agents
+11. Thoughtworks / Martin Fowler Harness engineering for coding agent users
+12. Cursor Continually improving our agent harness
+</file>
+
+<file path="resources/reference/initializer-agent-playbook.md">
+# Initializer Agent Playbook
+
+Use this playbook for the first serious session in a repository, before
+incremental feature work begins.
+
+## Goal
+
+Create a stable operating surface so later sessions can implement behavior
+without re-deriving startup commands, current status, or task boundaries.
+
+## Required Outputs
+
+The initializer should leave behind at least these artifacts:
+
+- a root instruction file such as `AGENTS.md` or `CLAUDE.md`
+- a machine-readable feature surface such as `feature_list.json`
+- a durable progress artifact such as `claude-progress.md`
+- a standard startup helper such as `init.sh`
+- an initial safe commit that captures the baseline scaffold
+
+## Checklist
+
+1. Define the standard startup path.
+2. Define the standard verification path.
+3. Create the progress log and record the starting state.
+4. Decompose the work into explicit features with statuses.
+5. Create the first clean baseline commit.
+
+## Success Test
+
+A fresh session with no prior chat context should be able to answer:
+
+- what this repository does
+- how to start it
+- how to verify it
+- what is unfinished
+- what the next best step is
+</file>
+
+<file path="resources/reference/method-map.md">
+# Method Map
+
+This table maps the most common long-running coding-agent failure modes to the
+artifact or operating rule that usually fixes them first.
+
+| Failure mode | What it looks like in practice | Primary fix | Supporting artifact |
+| --- | --- | --- | --- |
+| Cold-start confusion | A new session spends most of its time rediscovering setup and status | Make the repository the system of record | `claude-progress.md` |
+| Scope sprawl | The agent starts several features and finishes none of them cleanly | Restrict active scope | `feature_list.json` |
+| Premature completion | The agent claims done after code edits but before runnable proof | Bind completion to evidence | `clean-state-checklist.md` |
+| Fragile startup | Every session re-learns how to boot the project | Standardize setup and verification | `init.sh` |
+| Weak handoff | The next session cannot tell what is verified, broken, or next | End with an explicit handoff | `session-handoff.md` |
+| Subjective review | Review quality depends on taste or memory | Score output with fixed categories | `evaluator-rubric.md` |
+| Document bloat | Progress logs/PRDs grow every session until nobody reads them first | Cap size, reaudit on a schedule | `document-budgets.md` |
+
+## Operating Principle
+
+Add the smallest artifact that directly addresses the observed failure mode.
+Avoid solving every reliability problem by dumping more text into one global
+instruction file.
+</file>
+
+<file path="resources/reference/prompt-calibration.md">
+# Prompt Calibration
+
+Root instructions should define the operating frame, not every possible move.
+
+## Keep In The Root File
+
+- repository purpose and scope
+- startup path
+- verification path
+- non-negotiable constraints
+- required state artifacts
+- end-of-session rules
+
+## Move Out Of The Root File
+
+- long historical edge cases
+- topic-specific implementation details
+- local architecture notes that belong near the code
+- examples that only apply to one subsystem
+
+## Working Rule
+
+The root file should help a fresh session orient itself quickly. If the file is
+becoming a dumping ground for every past failure, split the detail into smaller
+documents and link to them instead.
+</file>
+
+<file path="resources/templates/AGENTS.md">
+# AGENTS.md
+
+This repository is designed for long-running coding-agent work. The goal is not
+to maximize raw code output. The goal is to leave the repo in a state where the
+next session can continue without guessing.
+
+## Startup Workflow
+
+Before writing code:
+
+1. Confirm the working directory with `pwd`.
+2. Read `claude-progress.md` for the latest verified state and next step.
+3. Read `feature_list.json` and choose the highest-priority unfinished feature.
+4. Review recent commits with `git log --oneline -5`.
+5. Run `./init.sh`.
+6. Run the required smoke or end-to-end verification before starting new work.
+
+If baseline verification is already failing, fix that first. Do not stack new
+feature work on top of a broken starting state.
+
+## Working Rules
+
+- Work on one feature at a time.
+- Do not mark a feature complete just because code was added.
+- Keep changes within the selected feature scope unless a blocker forces a
+  narrow supporting fix.
+- Do not silently change verification rules during implementation.
+- Prefer durable repo artifacts over chat summaries.
+
+## Required Artifacts
+
+- `feature_list.json`: source of truth for feature state
+- `claude-progress.md`: session log and current verified status
+- `init.sh`: standard startup and verification path
+- `session-handoff.md`: optional compact handoff for larger sessions
+
+## Definition Of Done
+
+A feature is done only when all of the following are true:
+
+- the target behavior is implemented
+- the required verification actually ran
+- evidence is recorded in `feature_list.json` or `claude-progress.md`
+- the repository remains restartable from the standard startup path
+
+## End Of Session
+
+Before ending a session:
+
+1. Update `claude-progress.md`.
+2. Update `feature_list.json`.
+3. Record any unresolved risk or blocker.
+4. Commit with a descriptive message once the work is in a safe state.
+5. Leave the repo clean enough for the next session to run `./init.sh`
+   immediately.
+</file>
+
+<file path="resources/templates/claude-progress.md">
+# Progress Log
+
+## Current Verified State
+
+- Repository root:
+- Standard startup path:
+- Standard verification path:
+- Current highest-priority unfinished feature:
+- Current blocker:
+
+## Session Log
+
+### Session 001
+
+- Date:
+- Goal:
+- Completed:
+- Verification run:
+- Evidence captured:
+- Commits:
+- Files or artifacts updated:
+- Known risk or unresolved issue:
+- Next best step:
+
+### Session 002
+
+- Date:
+- Goal:
+- Completed:
+- Verification run:
+- Evidence captured:
+- Commits:
+- Files or artifacts updated:
+- Known risk or unresolved issue:
+- Next best step:
+</file>
+
+<file path="resources/templates/CLAUDE.md">
+# CLAUDE.md
+
+You are working in a repository designed for long-running implementation work.
+Prioritize reliable completion, continuity across sessions, and explicit
+verification over speed.
+
+## Operating Loop
+
+At the start of every session:
+
+1. Run `pwd` and confirm you are in the expected repository root.
+2. Read `claude-progress.md`.
+3. Read `feature_list.json`.
+4. Review recent commits with `git log --oneline -5`.
+5. Run `./init.sh`.
+6. Check whether the baseline smoke or end-to-end path is already broken.
+
+Then select exactly one unfinished feature and work only on that feature until
+you either verify it or document why it is blocked.
+
+## Rules
+
+- One active feature at a time.
+- Do not claim completion without runnable evidence.
+- Do not rewrite the feature list to hide unfinished work.
+- Do not remove or weaken tests just to make the task look complete.
+- Use repository artifacts as the system of record.
+
+## Required Files
+
+- `feature_list.json`
+- `claude-progress.md`
+- `init.sh`
+- `session-handoff.md` when a compact handoff is useful
+
+## Completion Gate
+
+A feature can move to `passing` only after the required verification succeeds
+and the result is recorded.
+
+## Before You Stop
+
+1. Update the progress log.
+2. Update the feature state.
+3. Record what is still broken or unverified.
+4. Commit once the repository is safe to resume.
+5. Leave a clean restart path for the next session.
+</file>
+
+<file path="resources/templates/clean-state-checklist.md">
+# Clean State Checklist
+
+- [ ] The standard startup path still works.
+- [ ] The standard verification path still runs.
+- [ ] Current progress is recorded in the progress log.
+- [ ] Feature state reflects what is actually passing versus unverified.
+- [ ] No half-finished step is left undocumented.
+- [ ] The next session can continue without manual repair.
+</file>
+
+<file path="resources/templates/evaluator-rubric.md">
+# Evaluator Rubric
+
+Use this rubric after implementation and before final acceptance.
+
+| Category | Question | Score (0-2) | Notes |
+| --- | --- | --- | --- |
+| Correctness | Does the implemented behavior match the requested feature? |  |  |
+| Verification | Did the required checks actually run, with evidence? |  |  |
+| Scope discipline | Did the session stay inside the chosen feature scope? |  |  |
+| Reliability | Does the result survive restart or rerun without repair? |  |  |
+| Maintainability | Is the code and documentation clear enough for the next session? |  |  |
+| Handoff readiness | Can a fresh session continue work from repo artifacts only? |  |  |
+
+## Verdict
+
+- Accept
+- Revise
+- Block
+
+## Required Follow-Up
+
+- Missing evidence:
+- Required fixes:
+- Next review trigger:
+</file>
+
+<file path="resources/templates/feature_list.json">
+{
+  "project": "replace-with-project-name",
+  "last_updated": "YYYY-MM-DD",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true
+  },
+  "status_legend": {
+    "not_started": "Work has not begun.",
+    "in_progress": "The feature is the current active task.",
+    "blocked": "Work cannot continue until a documented blocker is resolved.",
+    "passing": "Required verification has passed and evidence is recorded."
+  },
+  "features": [
+    {
+      "id": "chat-001",
+      "priority": 1,
+      "area": "chat",
+      "title": "Create a new conversation",
+      "user_visible_behavior": "A user can click New Chat and see a fresh empty conversation.",
+      "status": "not_started",
+      "verification": [
+        "Open the app.",
+        "Click New Chat.",
+        "Verify a new conversation appears in the sidebar.",
+        "Verify the main panel shows an empty conversation state."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "chat-002",
+      "priority": 2,
+      "area": "chat",
+      "title": "Send a message in the current conversation",
+      "user_visible_behavior": "A user can submit a message and see it appear in the active thread.",
+      "status": "not_started",
+      "verification": [
+        "Open an existing conversation.",
+        "Type a message into the input.",
+        "Submit the message.",
+        "Verify the new message appears in the thread."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "chat-003",
+      "priority": 3,
+      "area": "chat",
+      "title": "Persist the active conversation list",
+      "user_visible_behavior": "A user sees previously created conversations after restarting the app.",
+      "status": "not_started",
+      "verification": [
+        "Create two conversations.",
+        "Restart the app.",
+        "Verify both conversations still appear in the sidebar."
+      ],
+      "evidence": [],
+      "notes": ""
+    }
+  ]
+}
+</file>
+
+<file path="resources/templates/index.md">
+# Template Guide
+
+These templates are ready to copy into your own project. Each serves a specific purpose in the agent's workflow. Edit the contents to match your project's commands, paths, feature names, and verification steps.
+
+## How to Get Started
+
+Copy these four files into your project root first:
+
+1. `AGENTS.md` or `CLAUDE.md`
+2. `init.sh`
+3. `claude-progress.md`
+4. `feature_list.json`
+
+Each template has a word budget — see [`../reference/document-budgets.md`](../reference/document-budgets.md). Keep edits inside it; an unbounded progress log defeats its own purpose.
+
+Add remaining files as your project grows, or hand an agent the [Project Harness Bootstrap Prompt](./project-harness-prompt.md) along with a project description to generate the whole set (plus `docs/` and `scripts/`) tailored to your project in one pass.
+
+---
+
+## AGENTS.md
+
+The root instruction file for agent sessions. Replace the startup workflow steps with your actual project paths and commands, adjust working rules to match your conventions, and keep the definition of done section.
+
+**What it does for the agent:**
+
+- Tells it to read progress and feature state before starting work
+- Forces it to work on one feature at a time
+- Requires evidence before marking anything as done
+- Defines what a clean end-of-session looks like
+
+Use `AGENTS.md` for Codex or other agents. Use `CLAUDE.md` if working with Claude Code — the structure is the same, just formatted for Claude's instruction style.
+
+## init.sh
+
+The startup script that runs dependency installation, verification, and prints the start command in one shot. Copy to your project root and edit these three variables at the top:
+
+- `INSTALL_CMD` — your dependency install command (e.g. `npm install`)
+- `VERIFY_CMD` — your basic verification command (e.g. `npm test`)
+- `START_CMD` — your dev server start command (e.g. `npm run dev`)
+
+Then run `chmod +x init.sh`. The script prints the current directory, installs dependencies, runs verification, and prints (or runs) the start command. If verification fails, the agent should stop and fix the baseline first.
+
+## claude-progress.md
+
+The progress log read at the start of every session and updated at the end. Copy to your project root and fill in the "Current Verified State" section with your project's info, then update the session record after each session.
+
+**Current Verified State fields:**
+
+- `Repository root directory` — where the project lives
+- `Standard startup path` — command to get the project running
+- `Standard verification path` — command to run tests
+- `Highest priority unfinished feature` — what the next session should work on
+- `Current blocker` — anything that's stuck
+
+**Session Record fields:**
+
+- `Goal` — what you planned to do
+- `Completed` — what actually got done
+- `Verification run` — what tests were executed
+- `Evidence recorded` — what proof was captured
+- `Commits` — what was committed
+- `Known risks` — what might be broken
+- `Next best action` — where the next session should start
+
+## feature_list.json
+
+The feature tracker: a machine-readable list of every feature with its status, verification steps, and evidence. Replace the example features with your own. Each feature needs:
+
+- `id` — short unique identifier
+- `priority` — integer, lower = higher priority
+- `area` — which part of the app (e.g. "chat", "import")
+- `title` — short description
+- `user_visible_behavior` — what the user should see when it works
+- `status` — one of `not_started`, `in_progress`, `blocked`, `passing`
+- `verification` — step-by-step instructions to confirm it works
+- `evidence` — recorded proof that verification passed
+- `notes` — any extra context
+
+**Status rules:**
+
+- `not_started` — hasn't been touched
+- `in_progress` — the one feature currently being worked on (only one at a time)
+- `blocked` — can't proceed due to a documented issue
+- `passing` — verification passed and evidence is recorded
+
+## session-handoff.md
+
+A compact handoff note between sessions for quick continuation. Copy to your project root and fill out at the end of each session.
+
+**What each section covers:**
+
+- **Currently verified** — what's confirmed working and verification run
+- **Changes this session** — what code or infrastructure changed
+- **Still broken or unverified** — known issues and risky areas
+- **Next best action** — what the next session should do
+- **Commands** — startup, verification, and debug commands for quick reference
+
+This file is optional for small sessions, but important when sessions are long or the project has multiple active areas.
+
+## clean-state-checklist.md
+
+A checklist to run before ending each session, ensuring the repo is in a good state for the next session. The agent should check these items as part of its end-of-session routine:
+
+- Standard startup still works
+- Standard verification still runs
+- Progress log is updated
+- Feature list reflects actual state (no false `passing` entries)
+- No half-finished work left unrecorded
+- Next session can continue without manual fixes
+
+## evaluator-rubric.md
+
+A scorecard for reviewing agent output quality after sessions or at project milestones. After completing work, score across six dimensions (0-2 each):
+
+1. **Correctness** — does the implementation match the target behavior?
+2. **Verification** — were the required checks actually run, with evidence?
+3. **Scope discipline** — did the agent stay within the selected feature?
+4. **Reliability** — does the result survive a restart or re-run?
+5. **Maintainability** — is the code and documentation clear for the next session?
+6. **Handoff readiness** — can a new session continue using only repo artifacts?
+
+Conclusion options: Accept (meets the bar), Revise (needs fixes), or Block (fundamental issues). The evaluator needs tuning: agents are poor self-judges. Compare its scores against your human judgment. Where they diverge, make the rubric more specific. Plan for 3-5 tuning rounds.
+
+## quality-document.md
+
+A quality snapshot grading each product domain and architectural layer in your project. Tracks codebase health over time, not just individual session output.
+
+Copy to your project root. Before a session, read it to understand where the codebase is weakest. After a session, update grades based on what changed. Over time, compare snapshots to see which harness changes improved codebase health.
+
+**What it grades:**
+
+- **Product domains** (e.g., document import, Q&A flow, indexing): each domain gets a grade (A-D) across verification status, agent legibility, test stability, and key gaps
+- **Architectural layers** (e.g., main process, preload, renderer, services): each layer gets a grade for boundary enforcement and agent legibility
+
+The evaluator rubric scores individual agent outputs ("Did the agent do good work this session?"). The quality document scores the codebase itself ("Is the project getting stronger or weaker over time?").
+
+Update after each significant session, before benchmark comparisons, after cleanup passes, or when onboarding a new agent or model.
+
+**Harness simplification tie-in:**
+
+To check whether a harness component is still needed: (1) Take a quality snapshot, (2) Remove one component, (3) Run the benchmark task suite, (4) Take another snapshot, (5) Compare — if grades didn't drop, the component was overhead; if they did, restore it.
+</file>
+
+<file path="resources/templates/init.sh">
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+# Replace these commands with the correct commands for your repository.
+INSTALL_CMD=(npm install)
+VERIFY_CMD=(npm test)
+START_CMD=(npm run dev)
+
+echo "==> Working directory: $PWD"
+echo "==> Syncing dependencies"
+"${INSTALL_CMD[@]}"
+
+echo "==> Running baseline verification"
+"${VERIFY_CMD[@]}"
+
+echo "==> Startup command"
+printf '    %q' "${START_CMD[@]}"
+printf '\n'
+
+if [ "${RUN_START_COMMAND:-0}" = "1" ]; then
+  echo "==> Starting the app"
+  exec "${START_CMD[@]}"
+fi
+
+echo "Set RUN_START_COMMAND=1 if you want init.sh to launch the app directly."
+</file>
+
+<file path="resources/templates/project-harness-prompt.md">
+# Project Harness Bootstrap Prompt
+
+A comprehensive prompt for the **first session** in a new repository. Give
+an agent a project description and this prompt; it returns a complete
+operating harness instead of just feature code.
+
+## How to use it
+
+1. Copy the prompt block below into your agent's chat.
+2. Replace `{{PROJECT_DESCRIPTION}}` with a few sentences — name the user,
+   core action, and known constraints.
+3. Replace `{{TECH_STACK}}` with your stack, or "agent's choice — propose
+   one" to let it decide.
+4. Send it. Review the generated `feature_list.json` and docs before continuing.
+
+This produces the same artifact set used throughout this course (see
+[index.md](./index.md) for other template guides).
+
+---
+
+## The Prompt
+
+```
+You are initializing a brand-new repository, before any incremental feature
+work begins. Leave behind a stable operating surface so a future session
+(you, another agent, or a human) can pick up this project having read only
+the repository's own files, with no memory of this conversation.
+
+PROJECT DESCRIPTION:
+OmniDigest is a self-hosted AI assistant that aggregates unread emails
+(IMAP/Gmail OAuth) and WhatsApp Web messages into a daily digest, viewed
+through a web UI. The backend fetches messages, summarizes them via an LLM,
+and pushes results live. Features: action-item extraction, calendar
+integration, group-chat summaries, a customizable AI persona. Core UX:
+connect accounts → sync & generate → view digest → search archives.
+
+TECH STACK:
+React + Vite + TypeScript frontend (Tailwind, shadcn/ui); Node.js + Express
+backend (whatsapp-web.js, imapflow, Socket.io); SQLite + Prisma; an LLM SDK;
+Docker for deployment.
+
+Work through the following phases in order. Read the files in resources. Do not skip ahead to
+implementation before Phase 4 is complete.
+
+## Phase 1 -- Understand and decompose
+
+1. Restate the project in your own words in one paragraph: who the user is,
+   what they can do, and what "working" looks like from the outside.
+2. If the tech stack was left to your judgment, propose one and give a
+   one-line justification (favor boring, well-documented choices over novel
+   ones unless the description demands otherwise).
+3. Decompose the description into discrete, independently verifiable
+   features. Each must be small enough to implement and verify in one
+   sitting, and describe USER-VISIBLE behavior, not internal mechanism
+   (e.g. "a user can import a .txt file and see it in the document list" --
+   not "implement DocumentService.importDocument()").
+4. Order features by priority: a thin vertical slice proving the whole
+   stack is wired together comes first, before breadth or polish.
+5. If scope, target platform, or success criteria are genuinely ambiguous
+   and would change the architecture, ask one focused question first.
+   Otherwise, make a reasonable assumption, write it down, and continue.
+
+## Phase 2 -- Establish layer boundaries and conventions
+
+Before any code, write down (and follow for the rest of the session):
+
+- Module/layer boundaries for this stack (e.g. client-server: UI never
+  imports server-only modules; CLI: command parsing never embeds business
+  logic; Electron: renderer never imports Node.js core modules).
+- Where cross-boundary contracts live (one types/interfaces module that is
+  the single source of truth for data crossing boundaries).
+- Naming/structure conventions: file layout, export style, error handling,
+  state persistence.
+- Logging conventions if applicable: structured (JSON) vs plain text, what
+  counts as an event, and at what level.
+
+## Phase 3 -- Create the harness artifacts
+
+Create every file below, tailored to this specific project (do not leave
+placeholder text -- fill in real commands, file paths, and feature names).
+
+### Root files
+
+1. **`AGENTS.md`** (and `CLAUDE.md` for Claude Code) -- root instruction
+   file. Must include: a startup workflow (confirm directory, read progress
+   log and feature list, check commits, run init script and baseline
+   verification); working rules (one feature at a time, no marking done
+   without evidence, stay in scope, never weaken verification); the layer
+   boundaries from Phase 2; a Definition of Done (implemented, verified,
+   evidence recorded, repo restartable); and an end-of-session checklist
+   (update progress log and feature list, record blockers, commit, leave a
+   clean restart path).
+
+2. **`feature_list.json`** -- machine-readable feature tracker. Schema:
+   ```json
+   {
+     "project": "<project-name>",
+     "last_updated": "<ISO date>",
+     "rules": {
+       "single_active_feature": true,
+       "passing_requires_evidence": true,
+       "do_not_skip_verification": true
+     },
+     "status_legend": {
+       "not_started": "Work has not begun.",
+       "in_progress": "The feature is the current active task.",
+       "blocked": "Work cannot continue until a documented blocker is resolved.",
+       "passing": "Required verification has passed and evidence is recorded."
+     },
+     "features": [
+       {
+         "id": "<area>-<number>",
+         "priority": 1,
+         "area": "<feature area>",
+         "title": "<short title>",
+         "user_visible_behavior": "<what the user sees when it works>",
+         "status": "not_started",
+         "verification": ["<step 1>", "<step 2>"],
+         "evidence": [],
+         "notes": ""
+       }
+     ]
+   }
+   ```
+   Populate with every feature from Phase 1. All features start at
+   `status: "not_started"` with empty `evidence`.
+
+3. **`claude-progress.md`** -- durable session log: "Current Verified
+   State" (repo root, startup/verification commands, active feature,
+   blocker) plus a "Session Log" with dated entries (goal, completion,
+   verification, evidence, commits, next step).
+
+4. **`init.sh`** -- startup/verification script: prints working directory,
+   installs dependencies, runs verification, prints (or runs, if
+   `RUN_START_COMMAND=1`) the app launch command. Failure blocks all
+   feature work.
+
+5. **`session-handoff.md`** -- compact continuity note: verified now,
+   changed this session, broken/unverified, next best step. Keep brief.
+
+6. **`clean-state-checklist.md`** -- pre-commit checklist: startup works,
+   verification runs, progress log current, feature list accurate, no
+   half-finished work, next session ready.
+
+7. **`evaluator-rubric.md`** -- scorecard (0-2 per dimension): Correctness,
+   Verification, Scope discipline, Reliability, Maintainability, Handoff.
+   Verdict: Accept/Revise/Block. Needs tuning against human judgment over time.
+
+8. **`quality-document.md`** -- health snapshot grading (A-D) each product
+   domain and architectural layer on verification, legibility, and test
+   stability, with change history — answers "is the codebase getting
+   stronger?"
+
+### Documentation (`docs/`)
+
+- `docs/ARCHITECTURE.md` -- layer diagram, data flow for 2-3 key operations,
+  storage layout, logging schema.
+- `docs/PRODUCT.md` -- every feature as user-facing behavior and UI/CLI/API shape.
+- `docs/RELIABILITY.md` (if runtime behavior matters) -- logging conventions,
+  clean-state definition, performance measurement.
+
+### Verification scripts (`scripts/`)
+
+Include only what applies: a **boundary checker** (greps for layer-rule
+violations, exits non-zero); a **data-integrity scanner** if data persists
+to disk (orphans, dangling references); a **benchmark script** if
+performance matters (core operations vs. sample data, pass/fail summary).
+
+### Sample data
+
+If the project consumes input data (documents, fixtures, requests), create
+2-3 small realistic samples under `data/` or `fixtures/` for testing.
+
+## Phase 4 -- Verify the harness itself, then stop
+
+1. Run `./init.sh` and confirm it passes cleanly.
+2. Run any boundary/scanner scripts and confirm they pass on the empty scaffold.
+3. Confirm every file `AGENTS.md`'s artifacts section references actually exists.
+4. Success test: could a fresh session, using only repository files, answer
+   what this project does, how to start/verify it, what's unfinished, and
+   the next best step? If not, fix the gap.
+5. Make an initial commit describing it as the harness baseline (not a feature).
+6. Stop. Do not start implementing features in this same pass.
+
+Report back with: the feature list you produced, which harness files you
+created, the result of `init.sh`, and the one open question (if any) you
+need answered before implementation begins.
+```
+
+---
+
+## Why this shape
+
+Every artifact encodes one bet: a future session should never re-derive
+context that already exists in the repo, paid up front during
+initialization rather than accumulating as chat context. See
+[index.md](./index.md) for individual template guides and the
+[Initializer Agent Playbook](../reference/initializer-agent-playbook.md)
+for the condensed checklist version.
+</file>
+
+<file path="resources/templates/quality-document.md">
+# Quality Document
+
+A quality snapshot for each product domain and architectural layer. Both agents and humans can use this document to quickly understand where the codebase is strong and where it needs work.
+
+**Update cadence:** After each significant session, or before starting a new phase of work.
+
+**Grading scale:**
+
+- **A**: All verification passing, clean architecture, agent-legible, stable tests
+- **B**: Verification passing, mostly clean, minor gaps in legibility or test coverage
+- **C**: Partially working, known gaps, some code areas hard for agents to understand
+- **D**: Not working, or major structural issues
+
+---
+
+## Product Domains
+
+| Domain | Grade | Verification | Agent Legibility | Test Stability | Key Gaps | Last Updated |
+|--------|-------|-------------|-----------------|---------------|----------|-------------|
+| Document Import | - | - | - | - | - | - |
+| Document Management | - | - | - | - | - | - |
+| Document Indexing | - | - | - | - | - | - |
+| Q&A Flow | - | - | - | - | - | - |
+| Grounded Answers | - | - | - | - | - | - |
+
+## Architectural Layers
+
+| Layer | Grade | Boundary Enforcement | Agent Legibility | Key Gaps | Last Updated |
+|-------|-------|---------------------|-----------------|----------|-------------|
+| Main Process | - | - | - | - | - |
+| Preload | - | - | - | - | - |
+| Renderer | - | - | - | - | - |
+| Services | - | - | - | - | - |
+
+## Change History
+
+### YYYY-MM-DD
+
+- Changes:
+- Domains promoted:
+- Domoted:
+- New gaps identified:
+- Gaps closed:
+</file>
+
+<file path="resources/templates/session-handoff.md">
+# Session Handoff
+
+## Verified Now
+
+- What is currently working:
+- What verification actually ran:
+
+## Changed This Session
+
+- Code or behavior added:
+- Infrastructure or harness changes:
+
+## Broken Or Unverified
+
+- Known defect:
+- Unverified path:
+- Risk for the next session:
+
+## Next Best Step
+
+- Highest-priority unfinished feature:
+- Why it is next:
+- What counts as passing:
+- What must not change during that step:
+
+## Commands
+
+- Startup:
+- Verification:
+- Focused debug command:
+</file>
+
+<file path="04_templates/igcse_blueprint.tex">
+% IGCSE 0478 blueprint demo -- proves the shared preamble's six custom
+% environments compile and render distinctly. Not real content; never
+% copy this file's body into 05_output, only its structure/pattern.
+\input{igcse_preamble.tex}
+
+% --- Class-notes section skeleton -------------------------------------------
+% One \subsection per syllabus subsection, e.g. 1.1, 1.2, 1.3 -- content
+% comes from 03_knowledge_base/Topic_XX_Name.md.
+%
+% \input{../04_templates/igcse_preamble.tex}
+% \begin{document}
+% \title{Topic XX: <Topic Name>}
+% \maketitle
+% \section*{<Topic Name>}
+%   \subsection*{<Syllabus subsection, e.g. 1.1 Number systems>}
+%     <content from 03_knowledge_base, as prose/itemize>
+%     \begin{stratbox} ... \end{stratbox}   % optional, only if KB has a tip
+%     \begin{critbox} ... \end{critbox}     % optional, only if KB flags a mistake
+%     \begin{scenario} ... \end{scenario}   % optional, only if KB has a worked example
+%   % TODO: Insufficient source content      <- used verbatim when KB has a gap
+% \end{document}
+
+% --- Worksheet section skeleton ---------------------------------------------
+% Shares the Topic_XX_Name stem with its class notes (see Topic_XX_Name.tex
+% vs. Topic_XX_Name_Worksheet.tex). Content comes from the linked QP/MS
+% Markdown in 03_knowledge_base/PastPaper_<code>.md (## Question <label> /
+% **Question:** ... / **Mark scheme:** ...) -- the question text and the
+% mark scheme are two separate sections so a worksheet can be handed out
+% without the answers, then the mark scheme section added/printed
+% separately.
+%
+% \input{../04_templates/igcse_preamble.tex}
+% \begin{document}
+% \title{Topic XX: <Topic Name> -- Worksheet}
+% \maketitle
+% \section*{Questions}
+%   \begin{enumerate}[leftmargin=*]
+%     \item <question text from PastPaper_<code>.md, marks in [brackets]>
+%       \begin{enumerate}[label=(\alph*)]
+%         \item <sub-part text, one \item per QP label like 1(a), 1(b)>
+%       \end{enumerate}
+%   \end{enumerate}
+%   % TODO: Insufficient source content      <- used verbatim when a QP part has no text
+% \newpage
+% \section*{Mark Scheme}
+%   <one entry per matched question label, in the same order as above>
+%   % TODO: Insufficient source content      <- used verbatim when a part has no MS match
+% \end{document}
+
+% --- Weekly tutoring document skeleton --------------------------------------
+% Driven by a Study Plan in 00_syllabus/*.md (e.g. 6_month_zero_to_hero_plan.md)
+% naming one week's Focus/Topics row. Content for each section is pulled from
+% the Topic_XX_Name.md file(s) that row maps to (per RULE 3 mapping, confirmed
+% against the syllabus). Section order is fixed; do not reorder.
+%
+% \input{../04_templates/igcse_preamble.tex}
+% \begin{document}
+% \title{Week NN: <Focus>}
+% \maketitle
+% \begin{learningoutcomes}
+%   <syllabus objective(s) this week's Topic_XX_Name.md content addresses>
+% \end{learningoutcomes}
+% \section*{Comprehensive Notes}
+%   <content from 03_knowledge_base, as prose/itemize/tables; a TikZ diagram
+%    only where the KB content is itself diagrammatic, e.g. hardware/network
+%    layout -- never invent a diagram for content the KB describes in prose>
+%   \begin{stratbox} ... \end{stratbox}    % optional, only if KB has a tip
+%   \begin{critbox} ... \end{critbox}      % optional, only if KB flags a misconception
+%   \begin{errortrap} ... \end{errortrap}  % optional, only if KB flags a narrow working error
+% \section*{In-Class Worksheet}
+%   <multi-part scenario questions built from the week's PastPaper_<code>.md
+%    entries where available; mark totals come from the MS, never invented>
+% \section*{Homework Assignment}
+%   <one synoptic question, same sourcing rule as above>
+% \newpage
+% \section*{Mark Scheme}
+%   \begin{modelans} ... \end{modelans}    % marker's thought process, per question
+%   <longtable of marking points, sourced from the matched PastPaper_<code>.md MS>
+%   % TODO: Insufficient source content      <- used verbatim when a part has no MS match
+% \end{document}
+
+\begin{document}
+
+\title{Topic 00: Blueprint Demo}
+\author{IGCSE 0478 Notes}
+\date{}
+\maketitle
+
+\section{Blueprint Demo}
+
+\subsection{Demo Subsection}
+
+This blueprint file is not real content -- it exists only to prove the three
+custom environments compile and render distinctly.
+
+\begin{stratbox}
+Use this box for an exam technique or strategy pulled from the knowledge base.
+\end{stratbox}
+
+\begin{critbox}
+Use this box for a common mistake or misconception pulled from the knowledge base.
+\end{critbox}
+
+\begin{scenario}
+Use this box for an applied scenario or worked example pulled from the knowledge base.
+\end{scenario}
+
+\begin{learningoutcomes}
+Use this box to list the syllabus learning objective(s) a weekly document addresses.
+\end{learningoutcomes}
+
+\begin{errortrap}
+Use this box for a narrow, specific working error pulled from the knowledge base (distinct from critbox's broader conceptual misconception).
+\end{errortrap}
+
+\begin{modelans}
+Use this box for a marker's worked thought process alongside a mark scheme entry.
+\end{modelans}
+
+\end{document}
+</file>
+
+<file path="04_templates/igcse_preamble.tex">
+% IGCSE 0478 shared preamble -- structure only, NO topic content.
+% \input this file as the FIRST line of every 05_output/*.tex (it includes
+% \documentclass, so it must come before anything else). Defines the six
+% custom environments every generated document must use exclusively, plus
+% the SenpaiCorner house style (watermark, footer, section styling, font).
+% See CLAUDE.md "Strict Separation of Structure and Content".
+\documentclass[11pt]{article}
+
+\usepackage[a4paper, margin=2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tikz}
+\usetikzlibrary{trees, arrows.meta, positioning, shapes.geometric, fit, calc, backgrounds}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, urlcolor=blue}
+\usepackage{titlesec}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+
+\tcbuselibrary{skins, breakable}
+
+% --- SenpaiCorner house style -----------------------------------------------
+\usepackage{draftwatermark}
+\SetWatermarkText{\shortstack{SenpaiCorner\\Mr. Wei}}
+\SetWatermarkScale{0.6}
+\SetWatermarkColor[gray]{0.92}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhead{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\thepage}
+\fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}
+% \maketitle forces the "plain" pagestyle on the title page, which fancyhdr
+% defines as bare page-number-only -- without redefining it too, the title
+% page would silently lose the footer link.
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \fancyfoot[C]{\thepage}%
+  \fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}%
+}
+
+% Section styling applies to starred (unnumbered) commands too -- every
+% generated document uses \section*/\subsection*, never auto-numbered ones,
+% since the syllabus's own numbering (e.g. "1.1 Number systems") is typed
+% directly into the heading text and would otherwise double up.
+\titleformat{\section}{\normalfont\Large\bfseries\color{blue!50!black}}{\thesection.}{0.5em}{}[\titlerule]
+\titleformat{\subsection}{\normalfont\large\bfseries\color{blue!40!black}}{\thesubsection}{0.5em}{}
+
+% stratbox: an exam strategy / technique tip.
+\newtcolorbox{stratbox}[1][Exam Strategy]{
+  enhanced, breakable, colback=blue!5, colframe=blue!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% critbox: a common mistake / misconception warning.
+\newtcolorbox{critbox}[1][Common Mistake]{
+  enhanced, breakable, colback=red!5, colframe=red!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% scenario: an applied exam-style scenario or worked example.
+\newtcolorbox{scenario}[1][Scenario]{
+  enhanced, breakable, colback=green!5, colframe=green!40!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% learningoutcomes: the syllabus learning objectives a document/week covers.
+\newtcolorbox{learningoutcomes}[1][Learning Objectives]{
+  enhanced, breakable, colback=purple!5, colframe=purple!60!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% errortrap: a specific, narrow error a student is likely to make in their
+% own working (distinct from critbox's broader conceptual misconception --
+% kept in orange, not critbox's red, so the two read as visually distinct).
+\newtcolorbox{errortrap}[1][Common Error Trap]{
+  enhanced, breakable, colback=orange!5, colframe=orange!70!black,
+  fonttitle=\bfseries, title=#1
+}
+
+% modelans: a worked model answer / marker's thought process for a mark scheme.
+\newtcolorbox{modelans}[1][Model Answer]{
+  enhanced, breakable, colback=gray!5, colframe=gray!60!black,
+  fonttitle=\bfseries, title=#1
+}
+</file>
+
+<file path="compile.sh">
+#!/usr/bin/env bash
+# Verification script: compiles one .tex file from 05_output/ with pdflatex
+# and reports a clear PASS/FAIL. Usage:
+#   ./compile.sh Topic_01_Data_Representation.tex
+#   ./compile.sh 05_output/Topic_01_Data_Representation.tex
+
+set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="$ROOT_DIR/05_output"
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 <file>.tex" >&2
+  exit 2
+fi
+
+TEX_BASENAME="$(basename "$1")"
+TEX_PATH="$OUTPUT_DIR/$TEX_BASENAME"
+
+if [ ! -f "$TEX_PATH" ]; then
+  echo "FAIL: $TEX_PATH does not exist." >&2
+  exit 1
+fi
+
+# Fresh TinyTeX installs land here on Windows; fall back to it if a
+# shell restart hasn't picked up the PATH update yet (see init.sh).
+TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
+if [ -d "$TINYTEX_BIN" ]; then
+  PATH="$PATH:$TINYTEX_BIN"
+fi
+
+if ! command -v pdflatex >/dev/null 2>&1; then
+  echo "FAIL: pdflatex not found on PATH. Run ./init.sh to check the toolchain." >&2
+  exit 1
+fi
+
+echo "==> Compiling $TEX_BASENAME inside $OUTPUT_DIR"
+cd "$OUTPUT_DIR"
+
+LOG_NAME="${TEX_BASENAME%.tex}.log"
+
+if pdflatex -interaction=nonstopmode -halt-on-error "$TEX_BASENAME" > "$LOG_NAME.stdout" 2>&1; then
+  echo "PASS: ${TEX_BASENAME%.tex}.pdf compiled with zero errors."
+  echo "      Log: $OUTPUT_DIR/$LOG_NAME"
+  exit 0
+else
+  echo "FAIL: pdflatex reported errors compiling $TEX_BASENAME." >&2
+  echo "      See $OUTPUT_DIR/$LOG_NAME and $OUTPUT_DIR/$LOG_NAME.stdout for details." >&2
+  grep -m 5 '^!' "$LOG_NAME" >&2 2>/dev/null || true
+  exit 1
+fi
+</file>
+
+<file path="docs/ARCHITECTURE.md">
+# Architecture
+
+## Pipeline: Input -> Extraction -> Synthesis -> Output
+
+The engine is on-demand and prompt/study-plan driven, not a fixed
+topic-by-topic batch job. Every generation run is one pass through these
+four steps:
+
+**Step 1 -- Input ingestion.** The user supplies an on-demand Target
+Prompt, or points at a custom Study Plan (`00_syllabus/*.md`). Nothing
+downstream runs until this exists (see `CLAUDE.md` Startup Workflow).
+
+**Step 2 -- Extraction & Resolution.** The engine fetches raw metadata
+from `01_raw_sources/` via `02_parsers/` (mechanical, deterministic,
+docx/pdf -> Markdown only), aligns the requested competencies against the
+strict sequence of `00_syllabus/` (the Syllabus Anchor -- terminology,
+scope, and depth here override anything found downstream), then builds or
+appends to the living `03_knowledge_base/` Markdown documents.
+
+**Step 3 -- Synthesis & Layout.** The engine pulls structure exclusively
+from the abstract `04_templates/` blueprint (environments, section order,
+placeholders -- never topic content) and populates it with textual
+content from the `03_knowledge_base/` files selected in Step 2.
+
+**Step 4 -- Output.** The engine writes the compiled `.tex` source out to
+`05_output/`. The `.tex` file is the production deliverable; PDF delivery
+is out of scope (`./compile.sh` only asserts syntax health -- see
+`CLAUDE.md` MODEL-ROUTING & OUTPUT BOUNDARY POLICY).
+
+```
+Step 1            Step 2                                          Step 3                Step 4
+-------            ------                                          ------                ------
+Target Prompt  ->  01_raw_sources/ --(02_parsers/*.py)--> 03_knowledge_base/  ->  [agent: 04_templates/  ->  05_output/
+or Study Plan       (read-only)         (mechanical)        (living Markdown,        + 03_knowledge_base/]      *.tex
+(00_syllabus/*.md)                                           agent may also                                 (deliverable;
+                         ^                                    edit directly,                                  PDF delivery
+                         |                                    RULE 7)                                         out of scope)
+                         +---- anchored against 00_syllabus/ (Syllabus Anchor: scope/terms/depth) -------------+
+```
+
+## Directories
+
+| Directory | Reads from | Writes to | Owner |
+| --- | --- | --- | --- |
+| `00_syllabus/` | (external: official Cambridge 0478 syllabus + study plans) | — (read-only) | human/maintainer |
+| `01_raw_sources/` | (external: docx/pdf source material) | — (read-only) | human/maintainer |
+| `02_parsers/` | `01_raw_sources/` | `03_knowledge_base/` | Python scripts |
+| `03_knowledge_base/` | `00_syllabus/` (mapping guidance) | itself | parsers **and** the agent (see Living Database) |
+| `04_templates/` | — | — | maintainer (structure only) |
+| `05_output/` | `03_knowledge_base/` + `04_templates/`, anchored against `00_syllabus/` | itself (`.tex`, plus incidental `.pdf`/logs from `./compile.sh`'s syntax check) | agent authoring + `compile.sh` |
+
+`01_raw_sources/` and `00_syllabus/` are the only true read-only layers. No
+step writes back into either of them. `02_parsers/` never touches
+`05_output/`; the agent authoring step never touches `01_raw_sources/` or
+`02_parsers/`.
+
+## Core Principles
+
+### 1. The Living Database
+
+`03_knowledge_base/*.md` is not a frozen, parser-only artifact. It is a
+living set of Markdown documents that the agent is permitted and encouraged
+to refine over time:
+
+- Fix formatting defects, OCR/extraction artifacts, or broken headings
+  found on review.
+- Append newly parsed questions, sources, or topic content into an
+  existing `Topic_XX_Name.md` rather than only creating new files.
+- Any such edit is still bound by `CLAUDE.md`'s never-hallucinate rule --
+  refining presentation of real content is always allowed; inventing
+  content is never allowed, regardless of which actor (parser or agent)
+  is doing the writing.
+
+This supersedes the older assumption that `03_knowledge_base/` is solely
+"the target of parsers" with no other writer.
+
+### 2. Dynamic Assembly
+
+`05_output/` generation is structurally agnostic. There is no fixed
+"notes file" or "worksheet file" shape the system enforces. A single
+Target Prompt or Study Plan can drive the agent to produce a 10-minute
+quiz, an 8-week bootcamp pack, a standalone mark scheme, full class notes,
+or any other document shape -- as long as every educational claim in it
+still traces back to `03_knowledge_base/` (or is marked
+`% TODO: Insufficient source content`) and every structural element comes
+from `04_templates/`.
+
+### 3. The Syllabus Anchor
+
+`00_syllabus/` is the absolute ground truth for *what* gets generated and
+*how it's scoped* -- not just a topic-mapping lookup. No matter how
+flexible the requested output is, the agent's first step before
+generating into `05_output/` is to cross-reference the requested topics
+against the official syllabus. The syllabus's terminology, scope, and
+depth take priority over the knowledge base: if `03_knowledge_base/`
+contains material that is out of scope, uses non-syllabus terminology, or
+exceeds the syllabus's required depth for that topic, the generated
+`05_output/` document must be filtered/adapted to match the syllabus --
+never the reverse.
+
+## Why this shape
+
+- **Read-only layers (`00_syllabus/`, `01_raw_sources/`) vs. living layers
+  (`03_knowledge_base/`, `05_output/`)** keeps the two sources of ground
+  truth -- "what the syllabus requires" and "what the source material
+  says" -- stable, while still letting the system improve its own working
+  copy of the content and its generated artifacts over time.
+- **Parsers vs. agent authoring are separate steps** because parsing is
+  mechanical (docx/pdf -> Markdown) and deterministic, while LaTeX
+  authoring and knowledge-base refinement require judgment and must be
+  auditable for hallucination -- keeping them separate makes each
+  independently verifiable.
+- **`04_templates/` has no content** so the same blueprint can be reused
+  across all 10 syllabus topics, and across any document shape, without
+  drift.
+- **The deliverable is `.tex`, not PDF** -- pdflatex's exit code is the
+  syntax-health gate; client-facing PDF polish is a separate, out-of-scope
+  concern, keeping this engine's job narrowly scoped to correct, faithful
+  LaTeX source generation.
+</file>
+
+<file path="docs/PIPELINE.md">
+# Pipeline: Input -> Extraction -> Synthesis -> Output
+
+## Step 1: Input ingestion
+
+Before any generation work starts, get the exact Target Prompt or the path
+to a custom Study Plan (`00_syllabus/*.md`) from the user (`CLAUDE.md`
+Startup Workflow). Nothing in Steps 2-4 runs without this.
+
+## Step 2: Extraction & Resolution (raw source -> Markdown, anchored to syllabus)
+
+```
+python3 02_parsers/<script>.py <path under 01_raw_sources/> [--out 03_knowledge_base/Topic_XX_Name.md]
+```
+
+- Parsers live in `02_parsers/`; one script per source type is fine (e.g. a
+  docx class-notes parser, a PDF question/mark-scheme parser). This step is
+  mechanical and deterministic -- no `.tex` output, ever.
+- Output must land in `03_knowledge_base/` using the `Topic_XX_Name.md`
+  convention (see `CLAUDE.md` for the numbering rule).
+- If `Topic_XX_Name.md` already exists, the class-notes parser appends the
+  new source as its own section rather than overwriting -- a topic's
+  Markdown accumulates from multiple raw sources over time.
+- `03_knowledge_base/` is a living database (see `docs/ARCHITECTURE.md` and
+  `CLAUDE.md` RULE 7): the agent may also hand-edit a file directly to fix
+  formatting/OCR defects or merge in content, not only via re-running a
+  parser. Refining presentation is always fine; inventing content never is.
+- Before pulling anything from `03_knowledge_base/` into a generation run,
+  resolve the Target Prompt/Study Plan's requested competencies against
+  `00_syllabus/` first (the Syllabus Anchor, `CLAUDE.md` RULE 8) -- its
+  terminology, scope, and depth override the knowledge base, never the
+  reverse.
+
+## Step 3: Synthesis & Layout (Markdown + template -> .tex)
+
+`05_output/` generation is structurally agnostic (`CLAUDE.md` RULE 8,
+Dynamic Assembly in `docs/ARCHITECTURE.md`) -- there's no single fixed
+"notes" or "worksheet" shape. Structure comes exclusively from
+`04_templates/`; content comes exclusively from the `03_knowledge_base/`
+files the Target Prompt/Study Plan named. Example, class notes for one
+topic:
+
+> Using `03_knowledge_base/Topic_01_Data_Representation.md` and the blueprint
+> in `04_templates/`, generate `05_output/Topic_01_Data_Representation.tex`.
+> Use only the `stratbox`/`critbox`/`scenario` environments defined in the
+> template. Mark any section with no matching knowledge-base content as
+> `% TODO: Insufficient source content` — do not invent content.
+
+For a worksheet, point at the parsed past-paper Markdown instead and ask for
+`05_output/Topic_01_Data_Representation_Worksheet.tex`. For anything else
+(a multi-topic quiz, a bootcamp pack, a standalone mark scheme), the same
+rules apply: pull the sources the prompt names, anchor against the
+syllabus, trace every claim to the knowledge base, and use only the
+template's defined structure.
+
+## Step 4: Output (.tex is the deliverable)
+
+```
+./compile.sh Topic_01_Data_Representation.tex
+```
+
+- The `.tex` file written to `05_output/` is the production deliverable.
+  Final client-facing PDF delivery is out of scope (`CLAUDE.md`
+  MODEL-ROUTING & OUTPUT BOUNDARY POLICY).
+- `compile.sh` runs `pdflatex` inside `05_output/` purely as a passive
+  syntax-health check and prints `PASS` (exit code 0) or `FAIL` (with the
+  first LaTeX errors from the log). A PDF is an incidental byproduct of
+  that check, not something this step needs to polish or ship.
+- A feature is not `passing` in `feature_list.json` until this reports PASS
+  and the PASS output is recorded as evidence.
+- Update `claude-progress.md` and `feature_list.json` per `CLAUDE.md`'s
+  "Before You Stop" section before ending the session.
+</file>
+
+<file path="init.sh">
+#!/usr/bin/env bash
+# Startup script: reports working directory, checks the LaTeX/Python
+# toolchain, and ensures the 5 pipeline directories exist. Missing tools are
+# reported but do not block directory setup -- this script is meant to be
+# safe to run on a fresh checkout before the toolchain is installed.
+
+set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+echo "==> Working directory: $PWD"
+
+status=0
+
+# Fresh TinyTeX installs (https://yihui.org/tinytex/) land here on Windows;
+# the user-PATH update they make often doesn't reach an already-running
+# shell until it's restarted, so fall back to the known install path.
+TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
+if [ -d "$TINYTEX_BIN" ]; then
+  PATH="$PATH:$TINYTEX_BIN"
+fi
+
+check_cmd() {
+  local name="$1"
+  shift
+  for cmd in "$@"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      echo "==> $name found: $(command -v "$cmd")"
+      return 0
+    fi
+  done
+  echo "WARNING: $name not found on PATH (tried: $*). Install it before running feature work that needs it." >&2
+  status=1
+  return 1
+}
+
+check_cmd "pdflatex" pdflatex
+check_cmd "python3" python3 python py
+
+echo "==> Ensuring core pipeline directories exist"
+for d in 00_syllabus 01_raw_sources 02_parsers 03_knowledge_base 04_templates 05_output; do
+  mkdir -p "$d"
+  echo "    $d/"
+done
+
+if [ "$status" -ne 0 ]; then
+  echo "==> init.sh finished with warnings (missing toolchain components above)."
+else
+  echo "==> init.sh finished cleanly."
+fi
+
+exit 0
+</file>
+
+<file path="claude-progress.md">
+# Progress Log
+
+## Current Verified State
+
+- Repository root: `_project/` (this repo)
+- Standard startup path: `./init.sh`
+- Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
+- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001` (Mechanical Parser Pipeline), `FEAT-002` (Syllabus Anchor & Mapping Logic), and `FEAT-004` (Context-Compression Engine) are `passing`.
+- Current blocker: none for active work. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed; `init.sh`/`compile.sh` fall back to `$HOME/AppData/Roaming/TinyTeX/bin/windows` if a fresh TinyTeX install hasn't reached the shell's PATH yet. Content-breadth gap (not an engine blocker): 6 of 10 syllabus topics have raw class-notes sources parsed; Topics 7-10 have none yet.
+
+## Session Log
+
+**Past Context (Sessions 001-004, compressed 2026-06-25):** Harness baseline established (`CLAUDE.md`, original 9-feature `feature_list.json`, `init.sh`, `compile.sh`, checklists, docs; real raw source material migrated into `01_raw_sources/`). Built the end-to-end vertical slice for Topic 1: installed TinyTeX/tcolorbox/booktabs, wrote `parse_class_notes_pdf.py`, authored `igcse_preamble.tex`/`igcse_blueprint.tex` (stratbox/critbox/scenario via tcolorbox) and `Topic_01_Data_Representation.tex`, all compiling clean. Generalized parsing: `parse_class_notes.py` gained a real DOCX path (structural signals -- bold-run headings, Word `<w:numPr>` bullets, true document order via `iter_inner_content()`), with two real heading-detection bugs found and fixed (a missing-whitespace numbering gap on single-digit subsection headings, and a length-cap rejecting a genuinely-bold 86-char heading); ran across Topics 2-6, all reviewed clean. Wrote `parse_past_paper.py` from scratch for QP/MS linking, then hardened it across a full pass over all complete 2025 papers (Paper 1 and Paper 2) plus the 2020 gold standard: replaced hardcoded x-position column thresholds with `pdfplumber.find_tables()` (column-position-independent), removed a false-positive boilerplate filter that dropped bare-numeric question labels inside tables, guarded against zero-padded pseudocode line numbers hijacking the main-question counter, added watermark/cid-glyph filtering, fixed chained inline sub-part markers being swallowed into their parent's text, fixed an `is_stem_only` false negative for stems ending in `)`, and fixed multi-page mark-scheme answers overwriting each other across page breaks (root-caused to nested sub-tables lacking a real "Question" header colliding with genuine question numbers; fixed by requiring that header to count a table as genuine). End state: zero "Unmatched Mark Scheme Entries" across all 13 parsed past-paper files, Paper 2 match rate improved from 16% to 70-92%. Found `04_templates/latex_template.sty` was an unfamiliar file embedding hardcoded topic content and conflicting box environments; user confirmed it as a personal branding reference, so its look (watermark, footer, section styling, sans-serif font) was merged into `igcse_preamble.tex` and the original deleted -- while verifying that merge, found and fixed a real fancyhdr bug where `\maketitle`'s internal `\thispagestyle{plain}` call was silently dropping the custom footer on every title page. Ran the formal `templates-001` verification (`./compile.sh igcse_blueprint.tex` -> PASS) that had previously only been checked via direct `pdflatex`. `knowledge_base-001` (6 of 10 topics parsed; Topics 7-10 have no raw sources yet) remained the only `blocked` feature throughout.
+
+### Session 005
+
+- Date: 2026-06-25
+- Goal: System update defining core architecture (Living Database, Dynamic Assembly, Syllabus Anchor; `docs/ARCHITECTURE.md` + `CLAUDE.md` RULE 7/8), then "next feature" -> `generation-001`.
+- Completed (architecture update):
+  - Rewrote `docs/ARCHITECTURE.md`: `00_syllabus/`/`01_raw_sources/` are the only true read-only layers now; `03_knowledge_base/` and `05_output/` are living/structurally-agnostic working layers. Added the three named principles as their own subsections.
+  - Updated `CLAUDE.md`: directory-boundaries section now reflects the agent can write into `03_knowledge_base/` directly; added `### ARCHITECTURE & DATA FLOW ###` with RULE 7 (KB Refinement) and RULE 8 (Syllabus Absolute Authority).
+  - Caught and fixed a real contradiction in `docs/PIPELINE.md`: it warned against hand-editing the knowledge base ("will silently clobber it"), directly conflicting with the new Living Database principle. Updated it and generalized its generation-example section for Dynamic Assembly.
+- Completed (`generation-001`):
+  - Chose Topic 2 (Data Transmission) rather than re-doing Topic 1, to prove the authoring process generalizes beyond pipeline-001's one hand-built example.
+  - Per the new RULE 8, read the syllabus's Topic 2 section first to confirm subtopic scope/terminology before pulling any KB content.
+  - Authored `05_output/Topic_02_Data_Transmission.tex`: correctly omitted `stratbox` since the source has no exam-strategy-style tip for this topic (boxes are conditional on the KB actually having that content, not forced for variety); used `critbox` for the source's explicit NOTE/Drawback callouts and `scenario` for its worked "why" questions. For two tables, used the KB's clean docx-sourced version instead of the badly-garbled PDF-sourced version of the same underlying content (the known open table-extraction gap) -- same source content restated cleanly, not new content.
+  - Found and fixed a real RULE 8 violation while cross-referencing against the syllabus: the syllabus says "automatic repeat query (ARQ)", but the KB file and the first draft both said "Automatic Repeat reQuest (ARQ)" (common industry phrasing, but wrong for this syllabus). Fixed in both `03_knowledge_base/Topic_02_Data_Transmission.md` (RULE 7) and the `.tex`.
+  - Added `\usepackage{booktabs}` to `igcse_preamble.tex` for clean table rules; re-verified `Topic_01_Data_Representation.tex` and `igcse_blueprint.tex` both still compile after this shared-preamble change.
+- Verification run: `./compile.sh Topic_02_Data_Transmission.tex` -> PASS, 6 pages; visually reviewed every page via PDF render (watermark/footer present, all 4 tables fit margins, box styling correct, no stratbox forced in); confirmed every claim traces to the KB file, no `% TODO` needed since coverage was complete for this topic.
+- Evidence captured: recorded in `feature_list.json` under `generation-001` (now `passing`).
+- Commits: none yet this session.
+- Files or artifacts updated: `docs/ARCHITECTURE.md`, `docs/PIPELINE.md`, `CLAUDE.md`, `04_templates/igcse_preamble.tex` (booktabs), `05_output/Topic_02_Data_Transmission.tex` (new), `03_knowledge_base/Topic_02_Data_Transmission.md` (ARQ terminology fix), `feature_list.json`.
+- Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred -- worked around for this generation, not fixed), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
+- Next best step: stitch a topic's class notes with its linked past-paper Markdown into one worksheet+mark-scheme document (`FEAT-003`'s remaining multi-source gap).
+
+### Session 006
+
+- Date: 2026-06-25
+- Goal: System update -- "Core Engine Re-Architecting & Model Split Implementation" (4 parts: model-routing policy + output boundary exclusion in `CLAUDE.md`; refactor `feature_list.json` away from topic-numbered features to core-engine-functionality features; refactor `docs/ARCHITECTURE.md`/`docs/PIPELINE.md` around an explicit Step 1-4 framing; compress `claude-progress.md`).
+- Completed:
+  - `CLAUDE.md`: added Startup Workflow step 1 (request the Target Prompt/Study Plan before any layout generation); added `### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###` (Haiku for mechanical tasks -- parser scripts, `./compile.sh` syntax checks, regex cleanup, log pruning; Sonnet for synthesis -- syllabus mapping, template stitching, fidelity validation, structural-alignment fixes); changed "Definition of Done" rule 1 and the `05_output/` directory description so `./compile.sh` PASS/exit-0 (not a polished PDF) is the bar -- `.tex` is the sole deliverable.
+  - `feature_list.json`: replaced the 9 old topic-tied features with 4 engine-functionality features (`FEAT-001` Mechanical Parser Pipeline, `FEAT-002` Syllabus Anchor & Mapping Logic, `FEAT-003` High-Fidelity LaTeX Compiler, `FEAT-004` Context-Compression Engine), carrying over real evidence from the old features' verification history rather than re-asserting blindly. `FEAT-003` is the single `in_progress` feature (multi-source stitching unproven); the other three are `passing`.
+  - `docs/ARCHITECTURE.md` and `docs/PIPELINE.md`: rewritten around the user's exact Step 1 (Input ingestion) / Step 2 (Extraction & Resolution) / Step 3 (Synthesis & Layout) / Step 4 (Output) framing, while preserving the three named principles (Living Database, Dynamic Assembly, Syllabus Anchor) from the prior architecture update.
+  - `claude-progress.md`: compressed Sessions 001-004 (previously one "Past Context" line plus three full expanded entries, including three same-session addenda) into one dense paragraph; updated the stale "Current Verified State" header to reference the new `FEAT-XXX` IDs instead of the removed topic-tied IDs. Session 005 kept expanded per RULE 5 (most recent 1-2 sessions stay expanded).
+- Verification run: not applicable -- this session is harness/documentation maintenance, not `.tex` generation; no `./compile.sh` run needed.
+- Evidence captured: recorded in `feature_list.json` under `FEAT-004` (compression re-executed and logged).
+- Commits: none yet this session.
+- Files or artifacts updated: `CLAUDE.md`, `feature_list.json`, `docs/ARCHITECTURE.md`, `docs/PIPELINE.md`, `claude-progress.md`.
+- Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
+- Next best step: wait for the user's next Target Prompt or Study Plan path before any further generation work (per the new Startup Workflow step 1).
+
+### Session 007
+
+- Date: 2026-06-25
+- Goal: User pasted a standalone `.tex` document (a "6-Month Zero to Hero" tutoring blueprint: its own preamble, three extra box environments -- `learningoutcomes`/`errortrap`/`modelans` -- a 24-week curriculum table, and a meta-prompt for AI generation). Same structure/content boundary conflict as the earlier `latex_template.sty` incident, so asked the user how to use it rather than guessing; user chose "merge new box styles into templates" (save the curriculum as a Study Plan + merge the new boxes + adopt the per-week structure).
+- Completed:
+  - Authored `00_syllabus/6_month_zero_to_hero_plan.md`: extracted only the Week/Focus/Topics curriculum table (no LaTeX, no box environments, no meta-prompt) into Markdown, with a convenience "Suggested KB mapping" column to `Topic_XX_Name` -- explicitly flagged as a reference, not a substitute for the RULE 3 syllabus cross-check at generation time. This is a write into `00_syllabus/`, which `CLAUDE.md` otherwise labels strictly read-only ("Never write here") -- done as a one-off maintainer-directed exception, analogous to how RULE 7 authorizes agent edits in `03_knowledge_base/`; flagged transparently to the user rather than silently overriding the rule.
+  - Merged `learningoutcomes` (purple), `errortrap` (recolored to orange, not the source document's red, since red was already taken by the canonical `critbox` and the two would otherwise have been visually indistinguishable), and `modelans` (gray) into `04_templates/igcse_preamble.tex` alongside the unchanged `stratbox`/`critbox`/`scenario`. Added `\usepackage{longtable}` and `\usepackage{tikz}` (+ libraries) since the new weekly-document skeleton needs both. Discarded the source document's own conflicting `stratbox`/`critbox` redefinitions and its meta-prompt section (superseded by this project's own Startup Workflow/Dynamic Generation rules).
+  - Added a documented "Weekly tutoring document skeleton" to `04_templates/igcse_blueprint.tex` (Learning Objectives -> Comprehensive Notes -> In-Class Worksheet -> Homework Assignment -> `\newpage` -> Mark Scheme, matching the source document's component order), plus demo usage of all three new boxes in the blueprint's compiled body.
+- Verification run: copied the preamble + blueprint into `05_output/`, ran `./compile.sh igcse_blueprint.tex` -> PASS, all six boxes render. Attempted to re-verify `Topic_01_Data_Representation.tex`/`Topic_02_Data_Transmission.tex` for regression but found neither file present in `05_output/` (it holds only `.gitkeep` -- expected, since `05_output/` is gitignored/disposable per `CLAUDE.md` and these were never committed; not a regression, nothing to investigate). Cleaned up the temporary blueprint copies afterward.
+- Evidence captured: recorded in `feature_list.json` under `FEAT-003` (template extension) and `FEAT-002` (the study-plan-file input path now has a real artifact to exercise against, generation against it not yet run).
+- Commits: none yet this session.
+- Files or artifacts updated: `00_syllabus/6_month_zero_to_hero_plan.md` (new), `04_templates/igcse_preamble.tex` (three new boxes + longtable/tikz), `04_templates/igcse_blueprint.tex` (weekly skeleton + box demos), `feature_list.json`.
+- Known risk or unresolved issue: `05_output/Topic_01_Data_Representation.tex` and `Topic_02_Data_Transmission.tex` no longer exist on disk (disposable/gitignored output, expected) -- if a fresh regression check against them is ever needed they must be regenerated first, not assumed present. The `00_syllabus/` write is a policy exception that hasn't been codified as a rule (unlike RULE 7 for `03_knowledge_base/`); if this becomes a recurring pattern, `CLAUDE.md` should gain an explicit rule for it rather than relying on one-off maintainer direction each time.
+- Next best step: generate the actual Week 1 document (or whichever week the user names) from `00_syllabus/6_month_zero_to_hero_plan.md` against `03_knowledge_base/`, exercising both the new weekly skeleton and the study-plan-file input path end-to-end -- still waiting on the user's explicit go-ahead/target per Startup Workflow step 1.
+</file>
+
+<file path="CLAUDE.md">
+# CLAUDE.md
+
+You are an expert LaTeX typesetter and educational materials formatter for
+IGCSE Computer Science (0478). You turn raw syllabus content and past-paper
+questions into clean Markdown, then into strictly templated LaTeX class
+notes and worksheets. You never invent educational content.
+
+## Startup Workflow
+
+1. **Request the Target Prompt or Study Plan first.** Before executing any
+   layout generation, ask the user for the exact Target Prompt or the path
+   to the custom Study Plan (`00_syllabus/*.md`) driving this session's
+   generation. Do not guess or self-select a topic/format to generate.
+2. Run `pwd` and confirm you are in the repository root.
+3. Read `claude-progress.md` (current state, blocker, next step).
+4. Read `feature_list.json` (exactly one feature should be `in_progress`).
+5. Run `git log --oneline -5`.
+6. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
+   core directories exist.
+7. Work on the one `in_progress` (or highest-priority `not_started`)
+   feature, or execute the requested generation against the Target
+   Prompt/Study Plan from step 1, until it is verified or documented as
+   blocked.
+
+## Directory Boundaries (read-only sources, living working layers)
+
+```
+01_raw_sources  --(02_parsers/*.py)-->  03_knowledge_base <--(agent edits, RULE 7)
+00_syllabus + 03_knowledge_base + 04_templates  --(agent authoring)-->  05_output
+```
+
+- `00_syllabus/` — read-only ground truth for *what to generate*. Official
+  syllabus PDFs (e.g. Cambridge 0478) and custom study-plan Markdown (e.g.
+  `8_week_bootcamp_plan.md`). The agent reads this to decide which topics to
+  pull, how to map sub-topics to Knowledge Base files, and to bound the
+  terminology/scope/depth of anything generated. Never write here.
+- `01_raw_sources/` — read-only input. Original syllabus text, past papers,
+  mark schemes, class notes (docx/pdf). Scripts and the agent NEVER write
+  here.
+- `02_parsers/` — Python scripts. Read ONLY from `01_raw_sources/`. Write
+  ONLY into `03_knowledge_base/`. Never write `.tex` directly.
+- `03_knowledge_base/` — clean Markdown, one file per topic, the single
+  source of truth for *content*. A **living database**, not a frozen
+  parser-only output: the agent may edit these files directly to fix
+  formatting/OCR defects or merge in newly parsed content (see RULE 7). It
+  never edits `00_syllabus/` or `01_raw_sources/`.
+- `04_templates/` — LaTeX blueprints: custom environments (`stratbox`,
+  `critbox`, `scenario`) and the structural skeleton for notes/worksheets.
+  Templates dictate FORM only — never put topic content in a template.
+- `05_output/` — the `.tex` file IS the production deliverable
+  (PDF delivery is out of scope; see MODEL-ROUTING & OUTPUT BOUNDARY
+  POLICY). Structurally agnostic (see RULE 8 / Dynamic Assembly): notes,
+  worksheets, quizzes, bootcamps, standalone mark schemes, anything the
+  prompt asks for. Anything here must be reproducible from
+  `03_knowledge_base/` + `04_templates/`, anchored against `00_syllabus/`.
+  Treat as disposable: regenerate, don't hand-patch.
+- `resources/` is the maintainer's personal harness-template reference
+  library (not part of this pipeline). Never treat its contents as syllabus
+  source material.
+
+## Strict Separation of Structure and Content
+
+- **Templates dictate form.** `04_templates/*.tex` defines environments,
+  section order, and placeholders only.
+- **The knowledge base dictates content.** Every sentence of educational
+  content in `05_output/*.tex` must trace back to a specific file in
+  `03_knowledge_base/`.
+- **Never hallucinate.** If a template section has no matching
+  knowledge-base content, insert `% TODO: Insufficient source content` at
+  that point instead of writing plausible-sounding material.
+
+### DYNAMIC GENERATION & SYLLABUS MAPPING ###
+
+The output is NOT a fixed 1-to-1 mapping of "Topic = Document." A single
+generation can be a multi-topic bootcamp class, a single worksheet, or a
+full mock exam, dictated by a user prompt or a study plan in `00_syllabus/`.
+
+- **RULE 1 (Strict KB Organization):** `03_knowledge_base/` must ALWAYS
+  remain strictly organized by syllabus topic (e.g. `Topic_01_Data_Representation.md`).
+  Never organize the knowledge base by "Week" or "Class" — that grouping
+  belongs only to the generated output, never to the source of truth.
+- **RULE 2 (Dynamic Output):** `05_output/` generation is completely
+  dynamic. When instructed to generate a document, read the user prompt or
+  the relevant study plan in `00_syllabus/` to determine WHICH topics from
+  `03_knowledge_base/` need to be pulled and combined — do not assume a
+  document corresponds to exactly one topic file.
+- **RULE 3 (Syllabus Ground Truth):** If a prompt or study plan names a
+  sub-topic (e.g. "Trace tables") and it's unclear which Knowledge Base file
+  contains it, consult the official syllabus PDF in `00_syllabus/` first to
+  map the concept to its correct topic number before pulling content. Never
+  guess the mapping.
+
+### ARCHITECTURE & DATA FLOW ###
+
+See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
+
+- **RULE 7 (KB Refinement):** You may edit files in `03_knowledge_base/`
+  directly if you detect poor formatting, OCR errors, or if instructed to
+  merge new parsed data into an existing topic. This is refinement of
+  presentation, not content invention — the never-hallucinate rule still
+  applies in full to any such edit.
+- **RULE 8 (Syllabus Absolute Authority):** When asked to generate a
+  document in `05_output/`, your FIRST step is to cross-reference the
+  requested topics against the official syllabus in `00_syllabus/`. If the
+  knowledge base contains out-of-scope information, or if the user
+  requests an unfamiliar format, the final LaTeX output MUST be filtered
+  and adapted to match the exact terminology, scope, and depth of the
+  Cambridge 0478 syllabus — never the reverse.
+- **RULE 9 (Topical Routing):** When routing past paper questions into the
+  Knowledge Base, ALWAYS append them to the end of the `Topic_XX_Name.md`
+  file under a clear header. ALWAYS include the source tag (e.g., `>
+  Source: 0478_s20_qp_11, Q3`) so the origin is never lost.
+
+### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###
+
+- **Model routing.** When delegating sub-work (e.g. via the Agent tool),
+  route by task character, not by default:
+  - **Haiku** (low-cost/mechanical): running or writing basic extraction
+    scripts in `02_parsers/`, executing `./compile.sh` for syntax checks,
+    regex/formatting cleanup, token-budget log pruning.
+  - **Sonnet** (high-intelligence/synthesis): complex syllabus mapping
+    from `00_syllabus/`, structure composition/stitching using
+    `04_templates/`, validating source-material fidelity, resolving
+    structural alignment issues.
+- **Output boundary exclusion.** The production target of this engine is
+  solely the `.tex` document in `05_output/`. Final client-facing PDF
+  delivery is out of scope — `./compile.sh` is a passive testing asset
+  that asserts syntax health (exit code 0 / PASS), not a step toward a
+  polished, shippable PDF. Rendering and reading the compiled PDF remains
+  a legitimate internal technique for catching content/layout bugs while
+  authoring, but it is not the deliverable and not a required gate beyond
+  `./compile.sh` reporting success.
+
+### TOKEN & CONTEXT BUDGETING ###
+
+- **RULE 1 (Concise Operations):** `CLAUDE.md`, `init.sh`, checklists stay
+  dense and declarative. No conversational filler, no redundant instructions.
+- **RULE 2 (Aggressive Log Pruning):** `claude-progress.md` carries only
+  current state, active blockers, and a 1-line summary per completed task.
+  No verbose old session histories.
+- **RULE 3 (Knowledge Base Density):** `03_knowledge_base/*.md` is
+  high-signal only — no boilerplate, no conversational phrasing, no
+  repeated preamble. Prefer tables, nested lists, strict hierarchy.
+- **RULE 4 (Targeted Loading):** Generating a `.tex` file never reads the
+  full `03_knowledge_base/` directory. Read only the exact `Topic_XX_*.md`
+  files named by the prompt or syllabus mapping.
+- **RULE 5 (Context Compression & Rolling Summaries):** When
+  `claude-progress.md` (or any operational log) nears its size limit, do
+  not delete history — compress it. Roll older sessions into one dense
+  summary block (e.g. "Past Context: Parsers built; Topics 1-4 KB
+  populated; compile.sh verified"). Keep only the most recent 1-2 sessions
+  expanded.
+
+### VERSION CONTROL POLICY ###
+
+- **RULE 6 (Core Engine Only):** The Git repository is strictly for the
+  document generation engine. Never force-add content files from
+  `00_syllabus/`, `01_raw_sources/`, `03_knowledge_base/`, or `05_output/`
+  to version control. The repo must remain a lightweight, portable toolset
+  (`.gitignore` enforces this — see root `.gitignore`).
+
+## Naming Convention
+
+Markdown and LaTeX files use `Topic_XX_Name.{md,tex}` (two-digit zero-padded
+topic number, PascalCase/underscored name), e.g. `Topic_01_Data_Representation.md`
+and `Topic_01_Data_Representation.tex`. Use the official 10-topic numbering
+from the syllabus (matches `01_raw_sources/past_papers/topical/`), not the
+7-folder split under `01_raw_sources/class_notes_docs/`. A worksheet and its
+class notes for the same topic share the same `Topic_XX_Name` stem so
+questions and mark schemes stay linked (e.g.
+`Topic_01_Data_Representation.tex` / `Topic_01_Data_Representation_Worksheet.tex`).
+
+## Definition of Done
+
+The production deliverable is the `.tex` file in `05_output/`, not a PDF
+(see Output Boundary Exclusion above). A feature is `passing` only when
+ALL of:
+
+1. The relevant `.tex` file passes `./compile.sh <file>.tex` with a
+   **PASS / exit code 0** result, confirming syntax health.
+2. The `.tex` file contains **zero hallucinated content** — every claim
+   traces to `03_knowledge_base/`, or is marked
+   `% TODO: Insufficient source content`.
+3. The file uses only the custom environments and structure defined in
+   `04_templates/` (no ad-hoc formatting).
+4. `feature_list.json` evidence for that feature records the `./compile.sh`
+   PASS output (or log excerpt) proving (1).
+
+## Before You Stop
+
+1. Update `claude-progress.md` (Current Verified State + a new Session Log entry).
+2. Update `feature_list.json` status/evidence — never mark `passing` without evidence.
+3. Run through `clean-state-checklist.md`.
+4. Commit with a message describing the feature, not "wip".
+</file>
+
+<file path="feature_list.json">
+{
+  "project": "igcse-0478-latex-pipeline",
+  "last_updated": "2026-06-25T22:15",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true,
+    "no_hallucinated_content": true
+  },
+  "status_legend": {
+    "not_started": "Work has not begun.",
+    "in_progress": "The feature is the current active task.",
+    "blocked": "Work cannot continue until a documented blocker is resolved.",
+    "passing": "Required verification has passed and evidence is recorded."
+  },
+  "notes": "Refactored 2026-06-25 from a topic-numbered feature list (pipeline-001/parsing-001/parsing-002/templates-001/generation-001/generation-002/integrity-001/compile-001/knowledge_base-001) to track core engine functionality components instead, per explicit user instruction: 'Remove all data-specific topic numbers... Replace them with core engine functionality components.' Breadth-of-topics-covered (e.g. '6 of 10 syllabus topics parsed') is intentionally no longer tracked here -- it is content-completeness, not engine functionality. Evidence below is honestly carried over from the prior features' real verification history, not re-asserted from scratch.",
+  "features": [
+    {
+      "id": "FEAT-001",
+      "priority": 1,
+      "area": "parsing",
+      "title": "Mechanical Parser Pipeline",
+      "user_visible_behavior": "Scripts in 02_parsers/ extract raw sources (01_raw_sources/) into clean, topic-grouped, living Markdown in 03_knowledge_base/ -- both class-notes (PDF/DOCX) and past-paper QP/MS pairs.",
+      "status": "passing",
+      "verification": [
+        "Run parse_class_notes.py against a class-notes PDF and DOCX; confirm clean Topic_XX_Name.md output with no leftover formatting artifacts.",
+        "Run parse_past_paper.py against an official QP/MS pair; confirm each question part is correctly paired with its mark scheme entry.",
+        "Confirm re-running against a new source for an existing topic appends/merges rather than destructively overwriting (Living Database)."
+      ],
+      "evidence": [
+        "parse_class_notes.py dispatches PDF (pdfplumber heuristics) vs DOCX (real structural signals: all-bold run = heading, Word <w:numPr> = bullet, iter_inner_content() for true document order). Appends to an existing Topic_XX_Name.md as a new section rather than overwriting, so a topic's Markdown accumulates from multiple raw sources.",
+        "parse_past_paper.py links QP to MS by question-part label. MS side reads CIE's real bordered Question/Answer/Marks table directly via pdfplumber.find_tables() (column-position-independent, unlike an earlier hardcoded-x-threshold approach that silently produced zero matches on some papers); QP side peels chained inline sub-part markers and guards against zero-padded pseudocode line-number listings hijacking the main-question counter.",
+        "Verified against the 2020 gold-standard paper (0478_s20_11: 41 parts, 29 matched) plus all 12 complete 2025 QP/MS pairs across both Paper 1 (theory) and Paper 2 (programming) formats -- Paper 2 match rate improved from an initial 16% to a 70-92% range after root-causing real parser bugs (column-position fragility, a false-positive boilerplate filter dropping bare-numeric labels, multi-page answer chunks overwriting each other instead of accumulating).",
+        "Verified against 6 class-notes topics' worth of PDF+DOCX sources; two real DOCX heading-detection bugs found and fixed (a missing-whitespace numbering gap, and a length-cap rejecting an otherwise-correctly-bold heading)."
+      ],
+      "notes": "Breadth (how many of the 10 syllabus topics have raw sources parsed) is a content-sourcing concern, not an engine-functionality one -- not tracked here. Known open gap: one class-notes PDF has a multi-column comparison table that the PDF path's linear-text extraction garbles; pdfplumber.find_tables() confirmed to extract it cleanly, but wiring that fix in is deferred pending priority."
+    },
+    {
+      "id": "FEAT-002",
+      "priority": 2,
+      "area": "synthesis",
+      "title": "Syllabus Anchor & Mapping Logic",
+      "user_visible_behavior": "Given a generic input prompt or a study plan, the agent maps the requested competencies against the official syllabus in 00_syllabus/ before pulling and filtering content from 03_knowledge_base/, so terminology/scope/depth always matches Cambridge 0478 -- never the reverse.",
+      "status": "passing",
+      "verification": [
+        "Given a prompt naming a topic/sub-topic, confirm the agent reads 00_syllabus/ first to confirm exact scope and official terminology before touching 03_knowledge_base/.",
+        "Confirm any out-of-scope or non-syllabus-terminology content found in the knowledge base gets filtered/corrected to match the syllabus in the generated output, not the reverse."
+      ],
+      "evidence": [
+        "Demonstrated end-to-end during the Topic 2 (Data Transmission) generation pass: read 00_syllabus/Cambridge_0478_Syllabus_2026-2028.pdf's Topic 2 section first to confirm exact subtopic scope (2.1/2.2/2.3) and official terminology before pulling any 03_knowledge_base/ content.",
+        "This cross-reference caught a real terminology mismatch: the syllabus says 'automatic repeat query (ARQ)', but the knowledge-base file said 'Automatic Repeat reQuest (ARQ)' (correct-sounding but wrong for this syllabus). Fixed in both the knowledge base (Living Database refinement) and the generated output -- the syllabus's terminology won, not the source material's.",
+        "Demonstrated for the prompt-driven input path (a direct topic request). The study-plan-file input path now has a real artifact to exercise it against: 00_syllabus/6_month_zero_to_hero_plan.md (24-week curriculum table mapping each week's Focus to a suggested Topic_XX_Name.md), authored 2026-06-25 from a maintainer-supplied document. Generation against a specific week of this plan has not yet been run -- the mapping column is a convenience reference only and still requires the syllabus-PDF cross-check at generation time per RULE 3."
+      ],
+      "notes": "Mapping is currently performed by the agent reading the syllabus PDF directly each time, not via a separate reusable lookup artifact. That remains sufficient verification per this feature's stated behavior (read syllabus -> map -> extract), which does not mandate a specific implementation mechanism."
+    },
+    {
+      "id": "FEAT-003",
+      "priority": 3,
+      "area": "generation",
+      "title": "High-Fidelity LaTeX Compiler",
+      "user_visible_behavior": "The agent stitches one or more 03_knowledge_base/ Markdown inputs into a structured .tex file using only the structural environments defined in 04_templates/, producing a syntactically valid .tex as the production deliverable (PDF delivery out of scope).",
+      "status": "in_progress",
+      "verification": [
+        "Generate a .tex from a single knowledge-base topic file + the blueprint; confirm only stratbox/critbox/scenario/template-defined structure is used and every claim traces to the source Markdown.",
+        "Generate a .tex stitching MULTIPLE knowledge-base files (e.g. several topics, or a topic's notes + its linked past-paper Markdown) into one structurally-agnostic document (quiz/bootcamp/worksheet/etc.).",
+        "./compile.sh reports PASS (exit code 0) for the generated file."
+      ],
+      "evidence": [
+        "Single-topic stitching fully verified: 05_output/Topic_01_Data_Representation.tex (hand-authored, pipeline-001-era) and 05_output/Topic_02_Data_Transmission.tex (authored via this feature's process) both pass ./compile.sh with zero errors, use only stratbox/critbox/scenario, and every claim traces to their respective 03_knowledge_base/ files with no hallucinated content. Boxes are used conditionally -- stratbox was correctly omitted from Topic 2 since its source has no exam-strategy-style tip, rather than forcing one in.",
+        "04_templates/igcse_preamble.tex (the single shared blueprint: stratbox/critbox/scenario via tcolorbox, SenpaiCorner house style) and igcse_blueprint.tex (structural demo + documented class-notes and worksheet skeletons) both verified compiling via ./compile.sh after being copied into 05_output/ for the formal pass.",
+        "Extended 2026-06-25 per explicit user instruction: merged three more environments (learningoutcomes, errortrap, modelans) into igcse_preamble.tex from a maintainer-supplied reference document, recoloring errortrap to orange (the source document's errortrap collided visually with critbox's existing red). Added a documented 'weekly tutoring document' skeleton to igcse_blueprint.tex (Learning Objectives -> Comprehensive Notes -> In-Class Worksheet -> Homework -> newpage -> Mark Scheme) plus longtable/tikz packages needed by it. Re-verified via ./compile.sh igcse_blueprint.tex -> PASS with all six boxes rendering.",
+        "Multi-topic / multi-source stitching (combining several Topic_XX_Name.md files into one document, or a topic's notes with its linked PastPaper_<code>.md into a worksheet+mark-scheme document) has NOT yet been attempted -- this is the active gap."
+      ],
+      "notes": "Next concrete step: stitch a topic's class notes with its linked past-paper Markdown into one worksheet-style document (the old generation-002 scope), which exercises the multi-source case this feature still needs evidence for."
+    },
+    {
+      "id": "FEAT-004",
+      "priority": 4,
+      "area": "maintenance",
+      "title": "Context-Compression Engine",
+      "user_visible_behavior": "When claude-progress.md (or any operational log) nears its size limit, past session history is rolled into a single dense summary block rather than deleted, freeing context budget while preserving high-signal state.",
+      "status": "passing",
+      "verification": [
+        "Confirm an operational log that has grown across multiple sessions gets compressed into one summary paragraph for older sessions, keeping only the most recent 1-2 sessions expanded.",
+        "Confirm no load-bearing state (current blocker, next step, key fixed bugs) is lost in the compression."
+      ],
+      "evidence": [
+        "First executed in an earlier session: Session 001's full log entry was rolled into a single 'Past Context' summary line when claude-progress.md grew past its first multi-session point, per CLAUDE.md's RULE 5 (Context Compression & Rolling Summaries).",
+        "Executed again 2026-06-25 on explicit instruction: Sessions 001-005 (the prior 'Past Context' line plus 4 full expanded session entries) were rolled into one dense summary paragraph, keeping claude-progress.md's 'Current Verified State' header (which already tracks current blocker/next step independently) intact and unsummarized."
+      ],
+      "notes": "This is a manual editorial process the agent performs per CLAUDE.md RULE 5 on review or explicit instruction, not an automated script -- 'engine' here means a reliably-followed rule, not literal code. That is sufficient per this feature's stated user-visible behavior, which does not mandate a specific implementation mechanism."
+    },
+    {
+      "id": "FEAT-005",
+      "priority": 5,
+      "area": "knowledge_base",
+      "title": "Semantic Topic Tagger (Past Papers -> Topical KB)",
+      "user_visible_behavior": "The agent (or a specialized Python script) reads a PastPaper_<code>.md file, evaluates each Question/Mark Scheme pair against the 00_syllabus/, and appends the pair into the correct Topic_XX_Name.md file in the knowledge base under a '## Past Paper Questions' heading, preserving the source metadata.",
+      "status": "not_started",
+      "verification": [
+        "Run the topic tagger on one PastPaper markdown file.",
+        "Verify that Topic_XX_Name.md files now contain the questions appended at the bottom.",
+        "Verify no mark schemes were detached from their questions during the move."
+      ],
+      "evidence": [],
+      "notes": "Requires high-intelligence mapping (Sonnet level) to accurately match question text to syllabus topics."
+    }
+  ]
+}
+</file>
+
+</files>
