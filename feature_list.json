@@ -1,0 +1,150 @@
+{
+  "project": "igcse-0478-latex-pipeline",
+  "last_updated": "2026-06-25",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true,
+    "no_hallucinated_content": true
+  },
+  "status_legend": {
+    "not_started": "Work has not begun.",
+    "in_progress": "The feature is the current active task.",
+    "blocked": "Work cannot continue until a documented blocker is resolved.",
+    "passing": "Required verification has passed and evidence is recorded."
+  },
+  "features": [
+    {
+      "id": "pipeline-001",
+      "priority": 1,
+      "area": "pipeline",
+      "title": "End-to-end vertical slice for one topic",
+      "user_visible_behavior": "Running the Topic 1 parser on one raw source file produces 03_knowledge_base/Topic_01_Data_Representation.md; the agent then generates 05_output/Topic_01_Data_Representation.tex from that file plus 04_templates/; running ./compile.sh on it produces a PDF with zero pdflatex errors.",
+      "status": "not_started",
+      "verification": [
+        "Run `python 02_parsers/<script>.py 01_raw_sources/class_notes_docs/1.Data Representation/<file>` and confirm a Topic_01_Data_Representation.md file appears in 03_knowledge_base/.",
+        "Ask the agent to generate the Topic 1 class notes .tex from that Markdown and 04_templates/.",
+        "Run `./compile.sh 05_output/Topic_01_Data_Representation.tex` and confirm it reports PASS.",
+        "Open the PDF and confirm no placeholder/garbled content."
+      ],
+      "evidence": [],
+      "notes": "Proves the whole stack is wired together before any breadth work. Must reconcile the official 10-topic syllabus numbering against the 7-folder split in 01_raw_sources/class_notes_docs/ as part of this feature."
+    },
+    {
+      "id": "parsing-001",
+      "priority": 2,
+      "area": "parsing",
+      "title": "Parser converts a raw class-notes file into clean Markdown",
+      "user_visible_behavior": "Running a script in 02_parsers/ against a docx/pdf in 01_raw_sources/class_notes_docs/ produces a Topic_XX_Name.md file in 03_knowledge_base/ with formatting artifacts stripped and headings matching the syllabus topic/subtopic structure.",
+      "status": "not_started",
+      "verification": [
+        "Run the parser against each class-notes file for one topic.",
+        "Confirm output Markdown has no leftover docx/pdf artifacts (page numbers, repeated headers, broken bullets).",
+        "Confirm the filename follows Topic_XX_Name.md."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "parsing-002",
+      "priority": 3,
+      "area": "parsing",
+      "title": "Parser links a past-paper question paper with its mark scheme",
+      "user_visible_behavior": "Running the past-paper parser on a topical QP/MS pair produces one Markdown file per topic where each question is immediately followed by its mark scheme answer.",
+      "status": "not_started",
+      "verification": [
+        "Run the parser on 01_raw_sources/past_papers/topical/topic 1 - data representation/.",
+        "Confirm each question text is paired with the correct mark scheme points.",
+        "Confirm output filename follows the Topic_XX_Name convention and is distinguishable from the class-notes Markdown for the same topic."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "templates-001",
+      "priority": 4,
+      "area": "templates",
+      "title": "LaTeX blueprint defines all custom environments",
+      "user_visible_behavior": "04_templates/ contains a master .tex blueprint with working \\newenvironment (or equivalent) definitions for stratbox, critbox, and scenario, plus a documented section skeleton for class notes and for worksheets.",
+      "status": "not_started",
+      "verification": [
+        "Compile the blueprint file standalone via ./compile.sh and confirm zero errors.",
+        "Confirm stratbox, critbox, and scenario each render distinctly in the output PDF using sample placeholder text."
+      ],
+      "evidence": [],
+      "notes": "Templates dictate form only; no topic content belongs here."
+    },
+    {
+      "id": "generation-001",
+      "priority": 5,
+      "area": "generation",
+      "title": "Agent generates class notes .tex from knowledge base",
+      "user_visible_behavior": "Given a Topic_XX_Name.md in 03_knowledge_base/ and the blueprint in 04_templates/, the agent produces 05_output/Topic_XX_Name.tex using only the defined custom environments, with every content claim traceable to the knowledge base file.",
+      "status": "not_started",
+      "verification": [
+        "Diff the generated .tex content against the source Markdown to confirm no invented facts.",
+        "Confirm only stratbox/critbox/scenario/template-defined environments are used.",
+        "Compile via ./compile.sh with zero errors."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "generation-002",
+      "priority": 6,
+      "area": "generation",
+      "title": "Agent generates a worksheet .tex linked to its mark scheme",
+      "user_visible_behavior": "Given the parsed past-paper Markdown for a topic, the agent produces a Topic_XX_Name_Worksheet.tex with questions formatted per the template, sharing the Topic_XX_Name stem with its class notes.",
+      "status": "not_started",
+      "verification": [
+        "Confirm the worksheet filename shares the Topic_XX_Name stem with the class notes file.",
+        "Compile via ./compile.sh with zero errors.",
+        "Spot-check 3 questions against the source past paper for fidelity."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "integrity-001",
+      "priority": 7,
+      "area": "integrity",
+      "title": "Missing knowledge-base content is marked TODO, never invented",
+      "user_visible_behavior": "If a template section has no matching content in 03_knowledge_base/, the generated .tex contains the literal comment `% TODO: Insufficient source content` at that point instead of fabricated text.",
+      "status": "not_started",
+      "verification": [
+        "Generate a .tex for a topic with deliberately incomplete knowledge-base Markdown.",
+        "Confirm every gap is marked with the TODO comment and no plausible-sounding filler text was written."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "compile-001",
+      "priority": 8,
+      "area": "compilation",
+      "title": "compile.sh gives a clear pass/fail for any .tex file",
+      "user_visible_behavior": "Running `./compile.sh <file>.tex` against a valid file prints PASS and the PDF path; running it against a deliberately broken .tex prints FAIL with the pdflatex error.",
+      "status": "not_started",
+      "verification": [
+        "Run ./compile.sh against a known-good .tex and confirm PASS + PDF created.",
+        "Run ./compile.sh against a .tex with a deliberate syntax error and confirm FAIL with a non-zero exit code."
+      ],
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "knowledge_base-001",
+      "priority": 9,
+      "area": "knowledge_base",
+      "title": "All 10 syllabus topics represented in the knowledge base",
+      "user_visible_behavior": "03_knowledge_base/ contains one Topic_XX_Name.md per official syllabus topic (01 through 10), each parsed from the corresponding raw sources.",
+      "status": "not_started",
+      "verification": [
+        "List 03_knowledge_base/ and confirm 10 topic Markdown files matching the official numbering.",
+        "Spot-check each file has non-empty, non-placeholder content."
+      ],
+      "evidence": [],
+      "notes": "Breadth feature; depends on parsing-001 and parsing-002 being generalized beyond one topic."
+    }
+  ]
+}

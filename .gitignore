@@ -1,0 +1,21 @@
+# Ignore Content Directories (Data & Output)
+00_syllabus/
+01_raw_sources/
+03_knowledge_base/
+05_output/
+
+# Ignore LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.pdf
+
+# Ignore Python artifacts
+__pycache__/
+*.pyc
+.env
+.venv/
