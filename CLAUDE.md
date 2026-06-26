@@ -39,7 +39,10 @@ notes and worksheets. You never invent educational content.
   here.
 - `02_parsers/` — Python scripts. Read ONLY from `01_raw_sources/`. Write
   ONLY into `03_knowledge_base/`. Never write `.tex` directly.
-- `03_knowledge_base/` — clean Markdown, one file per topic, the single
+- `03_knowledge_base/` — one folder per topic (e.g. `Topic_01_Data_Representation/`),
+  each containing up to three files: `Theory.md` (class-note content),
+  `Past_Papers.md` (YAML-tagged Q&A blocks, see RULE 10), `Syllabus.md`
+  (topic scope/keywords from `00_syllabus/keyword_routing.md`). The single
   source of truth for *content*. A **living database**, not a frozen
   parser-only output: the agent may edit these files directly to fix
   formatting/OCR defects or merge in newly parsed content (see RULE 7). It
@@ -76,9 +79,10 @@ generation can be a multi-topic bootcamp class, a single worksheet, or a
 full mock exam, dictated by a user prompt or a study plan in `00_syllabus/`.
 
 - **RULE 1 (Strict KB Organization):** `03_knowledge_base/` must ALWAYS
-  remain strictly organized by syllabus topic (e.g. `Topic_01_Data_Representation.md`).
-  Never organize the knowledge base by "Week" or "Class" — that grouping
-  belongs only to the generated output, never to the source of truth.
+  remain strictly organized by syllabus topic folder (e.g. `Topic_01_Data_Representation/`
+  containing `Theory.md`, `Past_Papers.md`, `Syllabus.md`). Never organize
+  the knowledge base by "Week" or "Class" — that grouping belongs only to
+  the generated output, never to the source of truth.
 - **RULE 2 (Dynamic Output):** `05_output/` generation is completely
   dynamic. When instructed to generate a document, read the user prompt or
   the relevant study plan in `00_syllabus/` to determine WHICH topics from
@@ -107,9 +111,17 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
   and adapted to match the exact terminology, scope, and depth of the
   Cambridge 0478 syllabus — never the reverse.
 - **RULE 9 (Topical Routing):** When routing past paper questions into the
-  Knowledge Base, ALWAYS append them to the end of the `Topic_XX_Name.md`
-  file under a clear header. ALWAYS include the source tag (e.g., `>
-  Source: 0478_s20_qp_11, Q3`) so the origin is never lost.
+  Knowledge Base, ALWAYS append them to `03_knowledge_base/<Topic_XX_Name>/Past_Papers.md`
+  with a YAML frontmatter block (see RULE 10). ALWAYS include the
+  `source_file` field so the origin is never lost.
+- **RULE 10 (Breadcrumb Metadata):** Every Q&A pair written to any
+  `Past_Papers.md` MUST be prepended with a YAML frontmatter block
+  containing these four fields: `breadcrumbs` (most specific sub-topic
+  string, e.g. `"3.2 Input and output devices"`), `source_file` (the
+  originating `PastPaper_*.md` filename), `total_marks` (integer),
+  and `tags` (array of 3–5 keyword strings drawn from
+  `00_syllabus/Syllabus_Routing_Keywords.md`). This metadata is the
+  primary pre-filtering key — never omit or approximate it.
 
 ### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###
 
@@ -141,9 +153,11 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
 - **RULE 3 (Knowledge Base Density):** `03_knowledge_base/*.md` is
   high-signal only — no boilerplate, no conversational phrasing, no
   repeated preamble. Prefer tables, nested lists, strict hierarchy.
-- **RULE 4 (Targeted Loading):** Generating a `.tex` file never reads the
-  full `03_knowledge_base/` directory. Read only the exact `Topic_XX_*.md`
-  files named by the prompt or syllabus mapping.
+- **RULE 4 (Targeted Loading):** `03_knowledge_base/` is organized into
+  per-topic folders, each containing `Theory.md`, `Past_Papers.md`, and
+  `Syllabus.md`. NEVER read a whole topic folder. Load by generation type:
+  Class Notes → `Theory.md` + `Syllabus.md` only.
+  Worksheet / Exam → `Past_Papers.md` + `Syllabus.md` only.
 - **RULE 5 (Context Compression & Rolling Summaries):** When
   `claude-progress.md` (or any operational log) nears its size limit, do
   not delete history — compress it. Roll older sessions into one dense
@@ -161,12 +175,13 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
 
 ## Naming Convention
 
-Markdown and LaTeX files use `Topic_XX_Name.{md,tex}` (two-digit zero-padded
-topic number, PascalCase/underscored name), e.g. `Topic_01_Data_Representation.md`
-and `Topic_01_Data_Representation.tex`. Use the official 10-topic numbering
-from the syllabus (matches `01_raw_sources/past_papers/topical/`), not the
-7-folder split under `01_raw_sources/class_notes_docs/`. A worksheet and its
-class notes for the same topic share the same `Topic_XX_Name` stem so
+Knowledge-base folders and LaTeX output files use `Topic_XX_Name` (two-digit
+zero-padded topic number, PascalCase/underscored name), e.g.
+`03_knowledge_base/Topic_01_Data_Representation/` and
+`05_output/Topic_01_Data_Representation.tex`. Use the official 10-topic
+numbering from the syllabus (matches `01_raw_sources/past_papers/topical/`),
+not the 7-folder split under `01_raw_sources/class_notes_docs/`. A worksheet
+and its class notes for the same topic share the same `Topic_XX_Name` stem so
 questions and mark schemes stay linked (e.g.
 `Topic_01_Data_Representation.tex` / `Topic_01_Data_Representation_Worksheet.tex`).
 

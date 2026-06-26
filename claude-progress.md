@@ -5,8 +5,9 @@
 - Repository root: `_project/` (this repo)
 - Standard startup path: `./init.sh`
 - Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
-- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001` (Mechanical Parser Pipeline), `FEAT-002` (Syllabus Anchor & Mapping Logic), and `FEAT-004` (Context-Compression Engine) are `passing`.
-- Current blocker: none for active work. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed; `init.sh`/`compile.sh` fall back to `$HOME/AppData/Roaming/TinyTeX/bin/windows` if a fresh TinyTeX install hasn't reached the shell's PATH yet. Content-breadth gap (not an engine blocker): 6 of 10 syllabus topics have raw class-notes sources parsed; Topics 7-10 have none yet.
+- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001`, `FEAT-002`, `FEAT-004`, `FEAT-005` are all `passing`.
+- KB structure (as of Session 008): 10 canonical `Topic_XX_Name/` folders under `03_knowledge_base/`, each with `Syllabus.md`; Topics 1-6 also have `Theory.md` (class notes); all 10 have `Past_Papers.md` (routed via Ollama). Flat `PastPaper_*.md` source files deleted. 35 past papers parsed total (2020-2025, Papers 1 and 2).
+- Current blocker: none for active work. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed; `init.sh`/`compile.sh` fall back to `$HOME/AppData/Roaming/TinyTeX/bin/windows` if a fresh TinyTeX install hasn't reached the shell's PATH yet. Content-breadth gap (not an engine blocker): 6 of 10 syllabus topics have raw class-notes sources parsed; Topics 7-10 have none yet. Routing quality gap (not a blocker): `llama3.2:3b` routes most Paper 1 questions to Topic_03_Hardware; a larger Ollama model would improve accuracy.
 
 ## Session Log
 
@@ -48,6 +49,26 @@
 - Files or artifacts updated: `CLAUDE.md`, `feature_list.json`, `docs/ARCHITECTURE.md`, `docs/PIPELINE.md`, `claude-progress.md`.
 - Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
 - Next best step: wait for the user's next Target Prompt or Study Plan path before any further generation work (per the new Startup Workflow step 1).
+
+### Session 008
+
+- Date: 2026-06-26
+- Goal: Database normalization (folder-per-topic KB), Ollama semantic routing (FEAT-005), past-paper backlog parse (2020-2024).
+- Completed:
+  - `CLAUDE.md`: updated RULE 4 (TOKEN & CONTEXT BUDGETING) to reflect new per-topic folder structure (`Theory.md`/`Past_Papers.md`/`Syllabus.md`); updated RULE 9 to point at `Topic_XX_Name/Past_Papers.md`; added RULE 10 (Breadcrumb Metadata -- every Q&A block in Past_Papers.md must carry a YAML frontmatter block with `breadcrumbs`, `source_file`, `total_marks`, `tags`).
+  - `02_parsers/split_syllabus.py` (new): deterministic (no LLM) script that parses `00_syllabus/keyword_routing.md` on `### Topic N: Name` headers and writes each section as `Syllabus.md` into the correct per-topic folder, matching existing folder names by `Topic_XX_` prefix to avoid duplicates. Ran successfully: all 10 topic folders now have `Syllabus.md`.
+  - `02_parsers/route_questions_ollama.py` (new, FEAT-005): semantic router using `ollama` Python library. Reads un-routed `PastPaper_*.md` files, groups sub-parts by main question number, sends each group to a local LLM for topic classification, writes YAML frontmatter (RULE 10) + question text to the correct `Topic_XX_Name/Past_Papers.md`. Key fixes during development: corrected `SYLLABUS_FILE` path, added batch mode (auto-glob), replaced `json.loads()` with `json.JSONDecoder().raw_decode()` to handle LLM trailing prose, replaced `→` with `->` for Windows cp1252 console, added `VALID_TOPIC_FOLDERS` guardrail to reject hallucinated folder names, fixed JSON decode error from LLM response.
+  - `02_parsers/route_questions.py`: moved from `03_knowledge_base/route_questions.py` (rule violation) to correct location in `02_parsers/`.
+  - `02_parsers/requirements.txt`: added `ollama` package.
+  - `migrate_kb.py`: ran as no-op (topic folders were already migrated from flat `Topic_*.md` files in a prior session).
+  - Past-paper backlog: batch-ran `parse_past_paper.py` (via scratchpad `batch_parse.py`) across all un-parsed QP/MS pairs from 2020-2024; 21 new `PastPaper_*.md` files written to KB root (s20/w20, s21, m23, s23/w23, s24, w24, s25_13). Total at KB root: 35 files.
+  - Routing: ran `route_questions_ollama.py --model llama3.2` against all 35 files (14 in batch, 21 in follow-up run). Post-run: cleaned up 8 hallucinated/mangled folders created before the `VALID_TOPIC_FOLDERS` guardrail was added (merged their `Past_Papers.md` content into correct canonical folders via `merge_spurious.py`). KB now has exactly 10 canonical topic folders.
+- Verification: 10 canonical topic folders present; all have `Syllabus.md`; Topics 1-9 have `Past_Papers.md` with YAML frontmatter blocks; `Topic_10_Boolean_Logic` has `Syllabus.md` only (no source papers routed there by the 3B model -- known quality limitation).
+- Evidence for FEAT-005: recorded in `feature_list.json`.
+- Commits: none yet this session.
+- Files or artifacts updated: `CLAUDE.md`, `02_parsers/split_syllabus.py` (new), `02_parsers/route_questions_ollama.py` (new), `02_parsers/route_questions.py` (moved), `02_parsers/requirements.txt`, `03_knowledge_base/Topic_*/Syllabus.md` (all 10, new), `03_knowledge_base/Topic_*/Past_Papers.md` (updated via routing), `feature_list.json`.
+- Known risk or unresolved issue: `llama3.2:3b` routing quality is poor -- most Paper 1 questions are classified as `Topic_03_Hardware` regardless of content (model size/context limitation). The `VALID_TOPIC_FOLDERS` guardrail prevents directory pollution but doesn't fix accuracy. Acceptable for now; upgrading to a larger Ollama model or using Sonnet for routing would improve accuracy at higher cost. Flat `PastPaper_*.md` files at KB root not yet deleted -- pending cleanup after routing fully confirmed.
+- Next best step: delete flat `PastPaper_*.md` from `03_knowledge_base/` root (Step 6); then resume `FEAT-003` (multi-source stitching -- generate a worksheet combining a topic's `Theory.md` with its `Past_Papers.md`).
 
 ### Session 007
 

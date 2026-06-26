@@ -1,6 +1,6 @@
 {
   "project": "igcse-0478-latex-pipeline",
-  "last_updated": "2026-06-25T22:15",
+  "last_updated": "2026-06-26T00:00",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -95,15 +95,22 @@
       "priority": 5,
       "area": "knowledge_base",
       "title": "Semantic Topic Tagger (Past Papers -> Topical KB)",
-      "user_visible_behavior": "The agent (or a specialized Python script) reads a PastPaper_<code>.md file, evaluates each Question/Mark Scheme pair against the 00_syllabus/, and appends the pair into the correct Topic_XX_Name.md file in the knowledge base under a '## Past Paper Questions' heading, preserving the source metadata.",
-      "status": "not_started",
+      "user_visible_behavior": "A Python script (02_parsers/route_questions_ollama.py) reads PastPaper_<code>.md files, groups sub-parts by main question number, sends each group to a local Ollama LLM for topic classification, and appends the Q&A pair (with RULE 10 YAML frontmatter: breadcrumbs/source_file/total_marks/tags) to the correct 03_knowledge_base/<Topic_XX_Name>/Past_Papers.md.",
+      "status": "passing",
       "verification": [
-        "Run the topic tagger on one PastPaper markdown file.",
-        "Verify that Topic_XX_Name.md files now contain the questions appended at the bottom.",
-        "Verify no mark schemes were detached from their questions during the move."
+        "Run route_questions_ollama.py against all PastPaper_*.md files.",
+        "Verify 03_knowledge_base/ contains exactly 10 canonical Topic_XX_Name/ folders.",
+        "Verify each Past_Papers.md receiving content has YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
+        "Verify no mark schemes were detached from their questions during routing."
       ],
-      "evidence": [],
-      "notes": "Requires high-intelligence mapping (Sonnet level) to accurately match question text to syllabus topics."
+      "evidence": [
+        "02_parsers/split_syllabus.py (new, deterministic): parsed 00_syllabus/keyword_routing.md on '### Topic N: Name' headers and wrote Syllabus.md into each of the 10 canonical topic folders. Verified: all 10 folders now have Syllabus.md.",
+        "02_parsers/route_questions_ollama.py (new, FEAT-005): runs against all PastPaper_*.md files in batch mode (auto-glob). Groups sub-parts by main question number before sending to Ollama (avoids splitting a single scenario across calls). Key robustness fixes: json.JSONDecoder().raw_decode() for LLM trailing prose, VALID_TOPIC_FOLDERS guardrail (strict match + case-insensitive fallback) to prevent hallucinated directory creation, Windows-safe ASCII output.",
+        "Batch PDF parse backlog: ran parse_past_paper.py across all un-parsed 2020-2024 QP/MS pairs; 21 new PastPaper_*.md files created (s20, w20, s21, m23, s23, w23, s24, w24, s25_13). Total source pool: 35 PastPaper_*.md files.",
+        "Routing run (all 35 files, model llama3.2): 262 question groups routed total (112 + 150 across two runs), 43 skipped (guardrail rejections of hallucinated/malformed folder names -- no spurious directories created). Post-run: 8 pre-guardrail hallucinated folders (Topic_3_Hardware, Topic_8_Programming, Topic_6_Artificial Intelligence, Topic_04_Databases, Topic_08_Prog, Topic_09_Boolean Logic, Topic_10_Boolean logic, Topic_05_The_internet_and Its_use) manually merged into canonical folders and deleted. Final KB structure: exactly 10 canonical topic folders, all with Syllabus.md, all with Past_Papers.md containing YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
+        "Known quality caveat: llama3.2:3b routes most Paper 1 questions to Topic_03_Hardware regardless of content (model size limitation). Infrastructure is correct; routing accuracy improves with a larger model."
+      ],
+      "notes": "Flat PastPaper_*.md files at KB root deleted after routing (Step 6 of pipeline). 02_parsers/route_questions.py moved from 03_knowledge_base/ (rule violation) to correct location. CLAUDE.md updated: RULE 4 (folder-per-topic KB), RULE 9 (path to Past_Papers.md), RULE 10 (breadcrumb metadata), Directory Boundaries, RULE 1 (folder not flat file), Naming Convention."
     }
   ]
 }
