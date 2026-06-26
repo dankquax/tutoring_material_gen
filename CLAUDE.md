@@ -13,11 +13,12 @@ notes and worksheets. You never invent educational content.
    generation. Do not guess or self-select a topic/format to generate.
 2. Run `pwd` and confirm you are in the repository root.
 3. Read `claude-progress.md` (current state, blocker, next step).
-4. Read `feature_list.json` (exactly one feature should be `in_progress`).
-5. Run `git log --oneline -5`.
-6. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
+4. Read `session-handoff.md` to immediately identify the active objective and current blockers.
+5. Read `feature_list.json` (exactly one feature should be `in_progress`).
+6. Run `git log --oneline -5`.
+7. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
    core directories exist.
-7. Work on the one `in_progress` (or highest-priority `not_started`)
+8. Work on the one `in_progress` (or highest-priority `not_started`)
    feature, or execute the requested generation against the Target
    Prompt/Study Plan from step 1, until it is verified or documented as
    blocked.
@@ -164,6 +165,10 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
   summary block (e.g. "Past Context: Parsers built; Topics 1-4 KB
   populated; compile.sh verified"). Keep only the most recent 1-2 sessions
   expanded.
+- **RULE 6 (Handoff Compaction):** `session-handoff.md` must NEVER contain
+  more than the 2 most recent sessions. Before adding a new session entry,
+  move the oldest expanded session into the "Compacted Archive" paragraph
+  (one dense sentence per session) and delete its full entry.
 
 ### VERSION CONTROL POLICY ###
 
@@ -205,5 +210,6 @@ ALL of:
 
 1. Update `claude-progress.md` (Current Verified State + a new Session Log entry).
 2. Update `feature_list.json` status/evidence — never mark `passing` without evidence.
-3. Run through `clean-state-checklist.md`.
-4. Commit with a message describing the feature, not "wip".
+3. Update `session-handoff.md`, strictly enforcing the 2-session limit by compacting older history into the "Compacted Archive" paragraph.
+4. Run through `clean-state-checklist.md`.
+5. Commit with a message describing the feature, not "wip".
