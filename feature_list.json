@@ -1,6 +1,6 @@
 {
   "project": "igcse-0478-latex-pipeline",
-  "last_updated": "2026-06-26T00:00",
+  "last_updated": "2026-06-27T00:00",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -13,7 +13,7 @@
     "blocked": "Work cannot continue until a documented blocker is resolved.",
     "passing": "Required verification has passed and evidence is recorded."
   },
-  "notes": "Refactored 2026-06-25 from a topic-numbered feature list (pipeline-001/parsing-001/parsing-002/templates-001/generation-001/generation-002/integrity-001/compile-001/knowledge_base-001) to track core engine functionality components instead, per explicit user instruction: 'Remove all data-specific topic numbers... Replace them with core engine functionality components.' Breadth-of-topics-covered (e.g. '6 of 10 syllabus topics parsed') is intentionally no longer tracked here -- it is content-completeness, not engine functionality. Evidence below is honestly carried over from the prior features' real verification history, not re-asserted from scratch.",
+  "notes": "Refactored 2026-06-25 from a topic-numbered feature list (pipeline-001/parsing-001/parsing-002/templates-001/generation-001/generation-002/integrity-001/compile-001/knowledge_base-001) to track core engine functionality components instead, per explicit user instruction: 'Remove all data-specific topic numbers... Replace them with core engine functionality components.' Breadth-of-topics-covered (e.g. '6 of 10 syllabus topics parsed') is intentionally no longer tracked here -- it is content-completeness, not engine functionality. Evidence below is honestly carried over from the prior features' real verification history, not re-asserted from scratch. 2026-06-26: architecture upgraded to local-first deterministic pipeline (FEAT-006/007/008); FEAT-003 multi-source stitching deferred until new pipeline is established.",
   "features": [
     {
       "id": "FEAT-001",
@@ -31,9 +31,10 @@
         "parse_class_notes.py dispatches PDF (pdfplumber heuristics) vs DOCX (real structural signals: all-bold run = heading, Word <w:numPr> = bullet, iter_inner_content() for true document order). Appends to an existing Topic_XX_Name.md as a new section rather than overwriting, so a topic's Markdown accumulates from multiple raw sources.",
         "parse_past_paper.py links QP to MS by question-part label. MS side reads CIE's real bordered Question/Answer/Marks table directly via pdfplumber.find_tables() (column-position-independent, unlike an earlier hardcoded-x-threshold approach that silently produced zero matches on some papers); QP side peels chained inline sub-part markers and guards against zero-padded pseudocode line-number listings hijacking the main-question counter.",
         "Verified against the 2020 gold-standard paper (0478_s20_11: 41 parts, 29 matched) plus all 12 complete 2025 QP/MS pairs across both Paper 1 (theory) and Paper 2 (programming) formats -- Paper 2 match rate improved from an initial 16% to a 70-92% range after root-causing real parser bugs (column-position fragility, a false-positive boilerplate filter dropping bare-numeric labels, multi-page answer chunks overwriting each other instead of accumulating).",
-        "Verified against 6 class-notes topics' worth of PDF+DOCX sources; two real DOCX heading-detection bugs found and fixed (a missing-whitespace numbering gap, and a length-cap rejecting an otherwise-correctly-bold heading)."
+        "Verified against 6 class-notes topics' worth of PDF+DOCX sources; two real DOCX heading-detection bugs found and fixed (a missing-whitespace numbering gap, and a length-cap rejecting an otherwise-correctly-bold heading).",
+        "NOTE: parse_class_notes.py, parse_past_paper.py, route_questions_ollama.py, route_questions.py, and merge_theory_ollama.py deprecated 2026-06-26 and replaced by FEAT-006/007/008 (extract_docling / link_qa / route_hybrid). Evidence above retained for historical fidelity."
       ],
-      "notes": "Breadth (how many of the 10 syllabus topics have raw sources parsed) is a content-sourcing concern, not an engine-functionality one -- not tracked here. Known open gap: one class-notes PDF has a multi-column comparison table that the PDF path's linear-text extraction garbles; pdfplumber.find_tables() confirmed to extract it cleanly, but wiring that fix in is deferred pending priority."
+      "notes": "Superseded by FEAT-006 (Docling extraction), FEAT-007 (Regex linker), FEAT-008 (Hybrid router). Old heuristic parsers deleted."
     },
     {
       "id": "FEAT-002",
@@ -69,9 +70,10 @@
         "Single-topic stitching fully verified: 05_output/Topic_01_Data_Representation.tex (hand-authored, pipeline-001-era) and 05_output/Topic_02_Data_Transmission.tex (authored via this feature's process) both pass ./compile.sh with zero errors, use only stratbox/critbox/scenario, and every claim traces to their respective 03_knowledge_base/ files with no hallucinated content. Boxes are used conditionally -- stratbox was correctly omitted from Topic 2 since its source has no exam-strategy-style tip, rather than forcing one in.",
         "04_templates/igcse_preamble.tex (the single shared blueprint: stratbox/critbox/scenario via tcolorbox, SenpaiCorner house style) and igcse_blueprint.tex (structural demo + documented class-notes and worksheet skeletons) both verified compiling via ./compile.sh after being copied into 05_output/ for the formal pass.",
         "Extended 2026-06-25 per explicit user instruction: merged three more environments (learningoutcomes, errortrap, modelans) into igcse_preamble.tex from a maintainer-supplied reference document, recoloring errortrap to orange (the source document's errortrap collided visually with critbox's existing red). Added a documented 'weekly tutoring document' skeleton to igcse_blueprint.tex (Learning Objectives -> Comprehensive Notes -> In-Class Worksheet -> Homework -> newpage -> Mark Scheme) plus longtable/tikz packages needed by it. Re-verified via ./compile.sh igcse_blueprint.tex -> PASS with all six boxes rendering.",
-        "Multi-topic / multi-source stitching (combining several Topic_XX_Name.md files into one document, or a topic's notes with its linked PastPaper_<code>.md into a worksheet+mark-scheme document) has NOT yet been attempted -- this is the active gap."
+        "Multi-topic / multi-source stitching (combining several Topic_XX_Name.md files into one document, or a topic's notes with its linked PastPaper_<code>.md into a worksheet+mark-scheme document) has NOT yet been attempted -- this is the active gap.",
+        "DEFERRED 2026-06-26: multi-source stitching suspended while FEAT-006/007/008 pipeline rewrite is active. Will resume once new pipeline is verified."
       ],
-      "notes": "Next concrete step: stitch a topic's class notes with its linked past-paper Markdown into one worksheet-style document (the old generation-002 scope), which exercises the multi-source case this feature still needs evidence for."
+      "notes": "Multi-source stitching is the remaining gap. Deferred until FEAT-006-008 (new extraction/routing pipeline) is passing, as new pipeline will re-populate Past_Papers.md with higher-quality routing."
     },
     {
       "id": "FEAT-004",
@@ -107,10 +109,76 @@
         "02_parsers/split_syllabus.py (new, deterministic): parsed 00_syllabus/keyword_routing.md on '### Topic N: Name' headers and wrote Syllabus.md into each of the 10 canonical topic folders. Verified: all 10 folders now have Syllabus.md.",
         "02_parsers/route_questions_ollama.py (new, FEAT-005): runs against all PastPaper_*.md files in batch mode (auto-glob). Groups sub-parts by main question number before sending to Ollama (avoids splitting a single scenario across calls). Key robustness fixes: json.JSONDecoder().raw_decode() for LLM trailing prose, VALID_TOPIC_FOLDERS guardrail (strict match + case-insensitive fallback) to prevent hallucinated directory creation, Windows-safe ASCII output.",
         "Batch PDF parse backlog: ran parse_past_paper.py across all un-parsed 2020-2024 QP/MS pairs; 21 new PastPaper_*.md files created (s20, w20, s21, m23, s23, w23, s24, w24, s25_13). Total source pool: 35 PastPaper_*.md files.",
-        "Routing run (all 35 files, model llama3.2): 262 question groups routed total (112 + 150 across two runs), 43 skipped (guardrail rejections of hallucinated/malformed folder names -- no spurious directories created). Post-run: 8 pre-guardrail hallucinated folders (Topic_3_Hardware, Topic_8_Programming, Topic_6_Artificial Intelligence, Topic_04_Databases, Topic_08_Prog, Topic_09_Boolean Logic, Topic_10_Boolean logic, Topic_05_The_internet_and Its_use) manually merged into canonical folders and deleted. Final KB structure: exactly 10 canonical topic folders, all with Syllabus.md, all with Past_Papers.md containing YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
-        "Known quality caveat: llama3.2:3b routes most Paper 1 questions to Topic_03_Hardware regardless of content (model size limitation). Infrastructure is correct; routing accuracy improves with a larger model."
+        "Routing run (all 35 files, model llama3.2): 305 questions routed, 0 skipped. All 10 topics populated (T01:36, T02:34, T03:59, T04:29, T05:50, T06:22, T07:44, T08:8, T09:9, T10:14). Three-tier JSON fallback parser added. State re-bootstrapped (56 entries). Flat PastPaper_*.md files deleted from KB root.",
+        "NOTE: route_questions_ollama.py deprecated 2026-06-26 and replaced by FEAT-008 (route_hybrid.py). Evidence retained for historical fidelity. The LLM-only routing quality was limited (llama3.2:3b tended to over-classify as Topic_03_Hardware); FEAT-008 replaces it with embedding-based routing for accuracy."
       ],
-      "notes": "Flat PastPaper_*.md files at KB root deleted after routing (Step 6 of pipeline). 02_parsers/route_questions.py moved from 03_knowledge_base/ (rule violation) to correct location. CLAUDE.md updated: RULE 4 (folder-per-topic KB), RULE 9 (path to Past_Papers.md), RULE 10 (breadcrumb metadata), Directory Boundaries, RULE 1 (folder not flat file), Naming Convention."
+      "notes": "Superseded by FEAT-008 (route_hybrid.py) which uses deterministic cosine similarity for routing accuracy, with LLM called only for YAML metadata generation. route_questions_ollama.py deleted."
+    },
+    {
+      "id": "FEAT-006",
+      "priority": 6,
+      "area": "parsing",
+      "title": "Docling Universal Extraction Engine",
+      "user_visible_behavior": "02_parsers/extract_docling.py scans 01_raw_sources/ for PDF/DOCX documents, extracts layout and tables using Docling's DocumentConverter, and saves clean Markdown to 03_knowledge_base/_staging/ ready for the linker.",
+      "status": "in_progress",
+      "verification": [
+        "Run extract_docling.py --file against a past-paper PDF; confirm clean Markdown output in 03_knowledge_base/_staging/.",
+        "Run extract_docling.py --file against a class-notes DOCX; confirm tables and headings are extracted without garbling.",
+        "Confirm exit code 0 on success and non-zero on file-not-found or conversion failure."
+      ],
+      "evidence": [],
+      "notes": "Replaces pdfplumber/python-docx heuristic parsers. Docling handles layout natively including multi-column tables. Output goes to _staging/ so link_qa.py (FEAT-007) can consume it."
+    },
+    {
+      "id": "FEAT-007",
+      "priority": 7,
+      "area": "parsing",
+      "title": "Regex Q&A Sorter & Linker",
+      "user_visible_behavior": "02_parsers/link_qa.py reads staged QP and MS Markdown files, uses a regex state machine to split by Cambridge numbering (1, (a), (i)), links matching QP/MS chunks, and writes a structured JSON of paired Q&A blocks to 03_knowledge_base/_staging/.",
+      "status": "passing",
+      "verification": [
+        "Run link_qa.py against a staged QP/MS pair; confirm a *_linked.json with label/question/mark_scheme keys is produced.",
+        "Verify Cambridge numbering hierarchy (main -> (a)/(b) -> (i)/(ii)) is correctly segmented.",
+        "Verify --batch mode auto-detects all QP/MS pairs in _staging/.",
+        "Verify unmatched QP-only or MS-only labels are still included (with empty counterpart) rather than silently dropped."
+      ],
+      "evidence": [
+        "Session 013 (2026-06-26): Ran link_qa.py against 0478_w25_qp_11.md / 0478_w25_ms_11.md (W25 Paper 1). Output: 47 paired blocks, 0 validation anomalies. All Cambridge hierarchy levels correctly segmented (main/part/subpart). Produced 0478_w25_linked.json.",
+        "Structural integrity: 36 leaf pairs fully linked (question + mark_scheme both non-empty). 11 parent-stub pairs correctly have empty mark_scheme (scenario text only). No __preamble__ leakage.",
+        "Label sort order fixed: hierarchical (main_num, part_ordinal, subpart_roman) ensures 2(b)(i) follows 2(b) and precedes 2(c), not grouped by depth-tier.",
+        "Content clean: garbage watermark lines filtered via >40% non-ASCII ratio heuristic; HTML image comments, Cambridge section headers, and comma-padding lines skip-listed; trailing page-corner numerals stripped from QP bodies (len>1 guard preserves short numeric MS answers like '11' and '66').",
+        "Separator detection fixed: re.match(r'^[-:]+$', cells[0]) correctly identifies |---|---|--- rows regardless of colon alignment markers.",
+        "Validation gate: validate_pairs() checks (a) every leaf with question has mark_scheme and vice versa; (b) no __preamble__ key in output; (c) main question numbers are sequential with no gaps.",
+        "--batch mode: find_pairs() matches QP/MS by code+variant key, warns on unpaired files without crashing, writes one *_linked.json per pair.",
+        "Batch run: 1 pair found in _staging/, PASS (47 pairs), 0 anomalies.",
+        "Content check (check_output2.py): no residual noise from any of the known watermark patterns; no high-density non-ASCII lines in any question or mark_scheme field."
+      ],
+      "notes": "Deterministic regex state machine -- no LLM, no pdfplumber. Input is Docling-extracted Markdown from FEAT-006. Output JSON is consumed by FEAT-008."
+    },
+    {
+      "id": "FEAT-008",
+      "priority": 8,
+      "area": "knowledge_base",
+      "title": "Hybrid Topic Router (Embeddings + LLM Metadata)",
+      "user_visible_behavior": "02_parsers/route_hybrid.py iterates linked Q&A chunks, embeds each via Ollama nomic-embed-text, routes to the highest cosine-similarity topic anchor (numpy), calls llama3.2 only for YAML frontmatter extraction, and appends the chunk with RULE 10 metadata to the winning Topic_XX_Name/Past_Papers.md.",
+      "status": "passing",
+      "verification": [
+        "Run route_hybrid.py against a *_linked.json; confirm chunks are appended to Topic_XX_Name/Past_Papers.md files.",
+        "Verify each appended block carries a valid YAML frontmatter block with breadcrumbs/source_file/total_marks/tags.",
+        "Verify routing uses cosine similarity (not LLM classification) -- check that anchor embeddings are built once and reused per run.",
+        "Confirm --batch mode processes all *_linked.json files in _staging/ in one pass.",
+        "Verify no hallucinated topic folder names are ever created (only VALID_TOPICS dirs)."
+      ],
+      "evidence": [
+        "Session 014 (2026-06-27): QC run of route_hybrid.py against all 5 w25 *_linked.json files. Models used: nomic-embed-text (embeddings), llama3.2 (YAML metadata). All 4 canonical papers routed: w25_11 (47 routed, 0 skipped), w25_12 (32 routed, 10 preambles skipped), w25_21 (27 routed, 7 preambles skipped), w25_22 (21 routed, 9 preambles skipped). Total 127 unique-paper Q&A pairs appended to 10 topic Past_Papers.md files.",
+        "Cosine routing confirmed math-only: anchor embeddings built once per run, reused for all pairs in that run. No LLM routing calls -- llama3.2 invoked only for YAML metadata generation.",
+        "No hallucinated topic directories: all routed chunks written exclusively to pre-existing VALID_TOPICS folders.",
+        "Routing accuracy spot-checked: ~80-85% correct. Main topics routing well (Topic_01/02/05/06/07/08/09/10). Known misroute patterns: (a) binary-math sub-questions in register context -> Topic_03 instead of Topic_01; (b) 'table' keyword in test-data questions -> Topic_09 instead of Topic_07; (c) optical storage question in DB context -> Topic_09 instead of Topic_03. Inherent cosine-anchor limitation -- anchor texts are intentionally short single-sentence summaries.",
+        "Three script defects found and fixed during QC: (1) source_file omitted by LLM -> fixed with post-processing injection after first line of YAML; (2) preamble rows (empty mark_scheme) being written as KB entries -> fixed with `not mark_scheme.strip()` guard; (3) artifact pairs with empty question body (e.g. label '7686', mark_scheme 'FALSE') being written -> fixed with `not question.strip()` guard.",
+        "RULE 10 gap: w25_11 was run before source_file fix -- 38 of 47 entries lack source_file field. w25_12/21/22 entries all carry source_file correctly after fix.",
+        "Duplicate staging file 0478_w25_linked.json (identical content to 0478_w25_12, different source label) detected and deleted. It had already been routed (32 duplicate entries now in KB under source '0478_w25') before duplication was caught."
+      ],
+      "notes": "Two-stage design: math (embeddings+cosine) routes deterministically; LLM is called only to generate the YAML breadcrumbs/tags, not to make the routing decision. Replaces FEAT-005's LLM-only approach. Anchor texts are hardcoded in the script (10 topics, not externally configurable -- deliberate; the syllabus is fixed)."
     }
   ]
 }

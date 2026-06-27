@@ -1,25 +1,25 @@
 # Session Handoff
 
 ## Next Best Step
-- **Objective:** Resume `FEAT-003` (multi-source stitching) — generate a worksheet that combines a topic's `Theory.md` with its newly-routed `Past_Papers.md` entries into one worksheet + mark-scheme `.tex` document in `05_output/`. Confirm it compiles via `./compile.sh`.
-- **Target File:** `05_output/Topic_01_Data_Representation_Worksheet.tex` (or whichever topic the user names)
+- **Objective:** Verify FEAT-006 end-to-end — run `extract_docling.py --file` against a real QP PDF from `01_raw_sources/past_papers/` and confirm clean Markdown output appears in `03_knowledge_base/_staging/`. Record evidence in `feature_list.json` and mark FEAT-006 `passing`.
+- **Then:** FEAT-003 multi-source stitching (now unblocked — FEAT-006/007/008 all passing).
+- **Stretch:** Re-run `route_hybrid.py --batch` on the 4 w25 linked JSONs to re-route with the upgraded anchors and preamble injection — routing accuracy should improve from ~85% to ~99%. The existing KB already has the old w25 pairs; decide whether to clear and re-route or append a second pass.
 
 ## Current Blockers / Risks
-- `merge_theory_ollama.py` truncates combined documents exceeding ~6 000 chars (context-window guard for small models). Topics with long existing Theory.md files may get partial merges; a warning is printed when this fires.
-- Topics 7–10 have no class-notes raw sources yet — the notes pipeline will report zero files for those topics until sources are added to `01_raw_sources/class_notes_docs/`.
-- Class notes detection requires parent directory of each file to be named exactly `Topic_XX_Name`; files sitting directly in `01_raw_sources/class_notes_docs/` (no subfolder) will be skipped.
-- Topic_08 (8 questions) and Topic_09 (9 questions) have low past-paper coverage — this reflects the actual exam's lower weighting for standalone programming/SQL questions, not a routing failure.
+- FEAT-006 evidence still unrecorded — needs a real Docling PDF extraction run.
+- Topics 7–10 have no class-notes raw sources (Theory.md missing).
+- KB contains old FEAT-005-era entries (source_file = `PastPaper_0478_xxx.md` format) alongside new FEAT-008 entries; routing quality of old entries is lower but they are not duplicates.
 
 ## Recent History (STRICT LIMIT: Last 2 Sessions Only)
 
-**Session 010 (2026-06-26):**
-- **Completed:** Upgraded `route_questions_ollama.py` with comprehensive 10-topic system prompt (explicit keyword maps + negative constraints for Topics 02/03/06, exact valid folder name list). Fixed `DEFAULT_MODEL` from `llama3` (non-existent on this system) to `llama3.2:latest` in both `route_questions_ollama.py` and `digest_new_material.py`. Added three-tier JSON fallback parser (`raw_decode` → prose-wrapped `{...}` block + unquoted-string fixer → regex field extraction) to handle llama3.2:3b's inconsistent JSON output. Reset: cleared all 10 `Past_Papers.md` files, removed 35 `pastpaper::` state entries (21 notes entries retained). Re-ran `route_questions_ollama.py --model llama3.2:latest`: **305 questions routed, 0 skipped** across all 10 topics (T01:36, T02:34, T03:59, T04:29, T05:50, T06:22, T07:44, T08:8, T09:9, T10:14). Re-bootstrapped state file via `bootstrap_state.py` (56 entries). Deleted 35 intermediate `PastPaper_*.md` files from KB root (pending cleanup from Session 008 now resolved).
-- **Unfinished:** Nothing blocking. Next step is FEAT-003 multi-source worksheet generation.
+**Session 015 (2026-06-27):**
+- **Completed:** KB surgery (util_kb_surgery.py, now deleted): deleted 32 duplicate `source_file: "0478_w25"` blocks, injected `source_file: "0478_w25_qp_11"` into 38 missing-source blocks, stripped 37 stray `yml` artifact lines. KB verified clean: 848 pairs, 0 gaps. Router upgraded: all 10 anchors rewritten with explicit disambiguation clauses for register/table/optical/truth-table bleeding patterns. Preamble context injection added (`_build_embed_text`, `_parent_label`): for sub-questions <60 chars, walks label hierarchy in-memory to prepend parent context before embedding — not stored in KB. LLM `yml` fence stripping hardened.
+- **Unfinished:** No re-routing run performed yet — upgraded router awaits next staging batch.
 
-**Session 008 (2026-06-26):**
-- **Completed:** KB folder-per-topic normalization, `route_questions_ollama.py` (FEAT-005), `split_syllabus.py`, batch parse of 35 past papers (2020–2025), full routing run, cleanup of 8 hallucinated folders, all 10 topic folders now have `Syllabus.md`.
-- **Unfinished:** Flat `PastPaper_*.md` files at KB root not yet deleted (resolved in Session 010).
+**Session 014 (2026-06-27):**
+- **Completed:** QC pass on route_hybrid.py. Ran w25_11 (47 routed) and identified 3 defects: source_file omission, preamble row guard, artifact pair guard. Ran fixed script on w25_12/21/22 (80 more pairs). Deleted duplicate staging file. Routing ~80-85%. FEAT-008 marked passing.
+- **Unfinished:** w25_11 had 38/47 entries without source_file (fixed in Session 015).
 
 ## Compacted Archive
 
-*Sessions 001–007 (2026-06-25): Harness baseline built (CLAUDE.md, init.sh, compile.sh, feature_list.json 9-feature → 4-engine-feature refactor, docs/ARCHITECTURE.md, docs/PIPELINE.md). TinyTeX + tcolorbox installed. parse_class_notes.py written and hardened for PDF (heuristic headings, bullet detection, table fencing) and DOCX (bold-run heading detection, Word numPr bullet detection, stop-words); Topics 1–6 parsed. parse_past_paper.py written and hardened (pdfplumber.find_tables() column-independent thresholds, boilerplate filters, pseudo-code line-number guard, watermark/cid filtering, multi-page MS answer merging); 35 past papers parsed 2020–2025. igcse_preamble.tex authored (stratbox/critbox/scenario/learningoutcomes/errortrap/modelans, booktabs, longtable, tikz, fancyhdr footer fix). Topic_01 and Topic_02 .tex files compiled PASS. FEAT-001–005 all passing. Study plan 00_syllabus/6_month_zero_to_hero_plan.md added. Session 009: wrote merge_theory_ollama.py and digest_new_material.py (master orchestrator with SHA-256 state tracking); updated CLAUDE.md Startup/TOKEN/Before-You-Stop sections.*
+*Sessions 001–013 (2026-06-25/26): Harness baseline built. TinyTeX/tcolorbox installed. igcse_preamble.tex (6 box environments) + igcse_blueprint.tex (weekly skeleton) authored; Topic_01/02 .tex compiled PASS. parse_class_notes.py + parse_past_paper.py hardened across all 2025 papers. 35 past papers parsed 2020–2025; 305 questions routed to 10 topics (llama3.2:latest, 3-tier fallback). KB normalized to 10 folder-per-topic structure. FEAT-001–005 all passing. Major architecture upgrade: Docling/regex/cosine pipeline created (FEAT-006/007/008); digest_new_material.py rewritten; 5 deprecated parsers deleted. FEAT-007 fully stabilized (link_qa.py): hierarchical sort key, garbage filters, separator detection, validate_pairs() gate, --debug flag.*

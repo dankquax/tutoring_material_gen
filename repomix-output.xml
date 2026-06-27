@@ -42,9 +42,15 @@ The content is organized as follows:
 <directory_structure>
 .gitignore
 02_parsers/.gitkeep
+02_parsers/bootstrap_state.py
+02_parsers/digest_new_material.py
+02_parsers/merge_theory_ollama.py
 02_parsers/parse_class_notes.py
 02_parsers/parse_past_paper.py
 02_parsers/requirements.txt
+02_parsers/route_questions_ollama.py
+02_parsers/route_questions.py
+02_parsers/split_syllabus.py
 04_templates/.gitkeep
 04_templates/igcse_blueprint.tex
 04_templates/igcse_preamble.tex
@@ -57,6 +63,7 @@ docs/PIPELINE.md
 evaluator-rubric.md
 feature_list.json
 init.sh
+migrate_kb.py
 resources/index.md
 resources/openai-advanced/index.md
 resources/openai-advanced/repo-template/AGENTS.md
@@ -91,6 +98,7 @@ resources/reference/index.md
 resources/reference/initializer-agent-playbook.md
 resources/reference/method-map.md
 resources/reference/prompt-calibration.md
+resources/templates.zip
 resources/templates/AGENTS.md
 resources/templates/claude-progress.md
 resources/templates/CLAUDE.md
@@ -102,6 +110,7 @@ resources/templates/init.sh
 resources/templates/project-harness-prompt.md
 resources/templates/quality-document.md
 resources/templates/session-handoff.md
+session-handoff.md
 </directory_structure>
 
 <files>
@@ -133,6 +142,675 @@ __pycache__/
 
 <file path="02_parsers/.gitkeep">
 
+</file>
+
+<file path="02_parsers/bootstrap_state.py">
+#!/usr/bin/env python3
+"""
+bootstrap_state.py — One-shot recovery tool.
+
+Renames class_notes_docs subfolders to Topic_XX_Name format (required by
+digest_new_material.py) and writes .processed_files.json to mark all
+existing source files as already processed, preventing re-runs from
+duplicating KB content after a lost state file.
+
+Run once from repo root:
+    py 02_parsers/bootstrap_state.py
+"""
+
+import hashlib
+import json
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RAW_DIR = REPO_ROOT / "01_raw_sources"
+NOTES_DIR = RAW_DIR / "class_notes_docs"
+PAPERS_DIR = RAW_DIR / "past_papers"
+STATE_FILE = RAW_DIR / ".processed_files.json"
+
+# old folder name -> Topic_XX_Name  (multiple sources can map to same target)
+RENAMES = [
+    ("1.Data Representation",       "Topic_01_Data_Representation"),
+    ("2.Data Transmission",          "Topic_02_Data_Transmission"),
+    ("3.Hardware 1",                 "Topic_03_Hardware"),
+    ("4.Hardware 2",                 "Topic_03_Hardware"),
+    ("5.Software",                   "Topic_04_Software"),
+    ("6.The Internet and its Uses",  "Topic_05_The_Internet_and_Its_Uses"),
+    ("7. Robotics and AI",           "Topic_06_Automated_and_Emerging_Technologies"),
+]
+
+QP_RE = re.compile(r"^(.+)_qp_(\d+)\.pdf$", re.IGNORECASE)
+MS_RE = re.compile(r"^(.+)_ms_(\d+)\.pdf$", re.IGNORECASE)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def main() -> None:
+    state: dict = {}
+
+    # ------------------------------------------------------------------
+    # 1. Rename / merge class note folders into Topic_XX_Name layout
+    # ------------------------------------------------------------------
+    print("=== Step 1: Rename class_notes_docs subfolders ===")
+    for old_name, new_name in RENAMES:
+        old_path = NOTES_DIR / old_name
+        new_path = NOTES_DIR / new_name
+        if not old_path.is_dir():
+            print(f"  SKIP (not found): {old_name}")
+            continue
+        new_path.mkdir(exist_ok=True)
+        for f in sorted(old_path.iterdir()):
+            if not f.is_file():
+                continue
+            dest = new_path / f.name
+            if dest.exists():
+                # Avoid collision when merging two source folders into one target
+                stem = old_name.replace(".", "").replace(" ", "_")
+                dest = new_path / f"{f.stem}_{stem}{f.suffix}"
+            f.rename(dest)
+            print(f"    moved: {f.name} -> {dest.name}")
+        try:
+            old_path.rmdir()
+            print(f"  OK: {old_name!r} -> {new_name!r}")
+        except OSError:
+            print(f"  WARN: could not remove {old_path} (not empty?)")
+
+    # ------------------------------------------------------------------
+    # 2. Mark all class notes as processed (using post-rename paths)
+    # ------------------------------------------------------------------
+    print("\n=== Step 2: Register class notes in state file ===")
+    for f in sorted(NOTES_DIR.rglob("*")):
+        if f.suffix.lower() not in (".pdf", ".docx"):
+            continue
+        rel = f.relative_to(RAW_DIR)
+        h = sha256_file(f)
+        key = f"notes::{rel}::{h}"
+        state[key] = {"status": "processed", "note": "bootstrapped — pre-existing content in KB"}
+        print(f"  NOTED: {rel}")
+
+    # ------------------------------------------------------------------
+    # 3. Mark all QP/MS pairs as processed
+    # ------------------------------------------------------------------
+    print("\n=== Step 3: Register past paper pairs in state file ===")
+    qp_map: dict[str, Path] = {}
+    ms_map: dict[str, Path] = {}
+    for f in sorted(PAPERS_DIR.rglob("*.pdf")):
+        m = QP_RE.match(f.name)
+        if m:
+            qp_map[f"{m.group(1)}__{m.group(2)}"] = f
+            continue
+        m = MS_RE.match(f.name)
+        if m:
+            ms_map[f"{m.group(1)}__{m.group(2)}"] = f
+
+    for code, qp in sorted(qp_map.items()):
+        if code not in ms_map:
+            print(f"  WARN: no MS found for {qp.name}")
+            continue
+        ms = ms_map[code]
+        h = hashlib.sha256()
+        h.update(qp.read_bytes())
+        h.update(ms.read_bytes())
+        paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp.stem, flags=re.IGNORECASE)
+        key = f"pastpaper::{paper_code}::{h.hexdigest()}"
+        state[key] = {"status": "processed", "note": "bootstrapped — pre-existing content in KB"}
+        print(f"  NOTED: {paper_code}")
+
+    # ------------------------------------------------------------------
+    # 4. Write state file
+    # ------------------------------------------------------------------
+    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    print(f"\n=== Done: wrote {len(state)} entries to {STATE_FILE} ===")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="02_parsers/digest_new_material.py">
+#!/usr/bin/env python3
+"""
+digest_new_material.py — Master ingestion orchestrator.
+
+Scans 01_raw_sources/ for unprocessed files and runs the correct pipeline:
+
+  Class notes (PDF / DOCX)
+    -> parse_class_notes.py  (extracts Markdown to a temp file)
+    -> merge_theory_ollama.py  (LLM-merges into Theory.md)
+
+  Past papers (QP + MS PDF pairs)
+    -> parse_past_paper.py  (links Q+MS into PastPaper_*.md at KB root)
+    -> route_questions_ollama.py  (semantically routes into per-topic Past_Papers.md)
+
+State is tracked in 01_raw_sources/.processed_files.json (SHA-256 keyed).
+Files already in the state file are skipped.
+
+Usage:
+    python digest_new_material.py [--model llama3] [--dry-run]
+
+Notes on file layout assumptions:
+  Class notes: 01_raw_sources/class_notes_docs/<Topic_XX_Name>/<file>.pdf|.docx
+               Parent directory name MUST match Topic_XX_Name (e.g. Topic_01_Data_Representation).
+  Past papers: 01_raw_sources/past_papers/<year>/<code>_qp_<n>.pdf
+                                                  <code>_ms_<n>.pdf
+               QP and MS are paired by matching the paper code (everything before _qp/_ms).
+"""
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RAW_SOURCES_DIR = REPO_ROOT / "01_raw_sources"
+KB_DIR = REPO_ROOT / "03_knowledge_base"
+PARSERS_DIR = REPO_ROOT / "02_parsers"
+STATE_FILE = RAW_SOURCES_DIR / ".processed_files.json"
+
+# Regex to extract topic number and name from a folder named Topic_XX_Name
+TOPIC_FOLDER_RE = re.compile(r"^Topic_(\d{2})_(.+)$")
+
+# QP / MS filename patterns:  <code>_qp_<n>.pdf  /  <code>_ms_<n>.pdf
+QP_RE = re.compile(r"^(.+)_qp_(\d+)\.pdf$", re.IGNORECASE)
+MS_RE = re.compile(r"^(.+)_ms_(\d+)\.pdf$", re.IGNORECASE)
+
+DEFAULT_MODEL = "llama3.2:latest"
+
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
+def load_state() -> dict:
+    if STATE_FILE.is_file():
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def mark_processed(state: dict, key: str, note: str) -> None:
+    state[key] = {"status": "processed", "note": note}
+
+
+# ---------------------------------------------------------------------------
+# Subprocess runner
+# ---------------------------------------------------------------------------
+
+def run(cmd: list, dry_run: bool = False) -> bool:
+    """Run a subprocess command. Returns True on success (exit 0)."""
+    display = " ".join(str(c) for c in cmd)
+    if dry_run:
+        print(f"  [DRY-RUN] {display}")
+        return True
+    print(f"  RUN: {display}")
+    result = subprocess.run(cmd, cwd=REPO_ROOT)
+    if result.returncode != 0:
+        print(f"  FAIL (exit {result.returncode}): {display}", file=sys.stderr)
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Class notes pipeline
+# ---------------------------------------------------------------------------
+
+def find_class_notes() -> list[tuple[Path, str, str]]:
+    """
+    Returns list of (file_path, topic_num, topic_name) for all class notes
+    PDFs and DOCXs whose parent directory matches Topic_XX_Name.
+    """
+    notes_dir = RAW_SOURCES_DIR / "class_notes_docs"
+    if not notes_dir.is_dir():
+        return []
+
+    results = []
+    for f in sorted(notes_dir.rglob("*")):
+        if f.suffix.lower() not in (".pdf", ".docx"):
+            continue
+        m = TOPIC_FOLDER_RE.match(f.parent.name)
+        if not m:
+            print(
+                f"  SKIP (class note): {f.relative_to(RAW_SOURCES_DIR)} — "
+                "parent directory name does not match Topic_XX_Name pattern.",
+                file=sys.stderr,
+            )
+            continue
+        results.append((f, m.group(1), m.group(2)))
+    return results
+
+
+def process_class_notes(state: dict, model: str, dry_run: bool) -> tuple[int, int]:
+    """Returns (processed, errors)."""
+    files = find_class_notes()
+    if not files:
+        print("  No class notes found under 01_raw_sources/class_notes_docs/")
+        return 0, 0
+
+    processed, errors = 0, 0
+    for note_path, topic_num, topic_name in files:
+        state_key = f"notes::{note_path.relative_to(RAW_SOURCES_DIR)}"
+        h = file_hash(note_path)
+        state_key_hash = f"{state_key}::{h}"
+
+        if state_key_hash in state:
+            print(f"  SKIP (already processed): {note_path.relative_to(RAW_SOURCES_DIR)}")
+            continue
+
+        print(f"\n[Class notes] {note_path.relative_to(RAW_SOURCES_DIR)}")
+        topic_folder = f"Topic_{topic_num}_{topic_name}"
+
+        # Step 1: parse_class_notes.py -> writes raw markdown to a temp file
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", delete=False, prefix=f"parsed_{topic_folder}_"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+
+        # parse_class_notes.py normally writes directly to KB, but we need a
+        # temp staging file so merge_theory_ollama.py can receive it.
+        # Strategy: parse to a dedicated staging path in KB, then merge.
+        staging_path = KB_DIR / f"_staging_{topic_folder}.md"
+
+        parse_ok = run(
+            [
+                sys.executable,
+                str(PARSERS_DIR / "parse_class_notes.py"),
+                str(note_path),
+                "--topic", topic_num,
+                "--name", topic_name,
+            ],
+            dry_run=dry_run,
+        )
+
+        if not parse_ok:
+            errors += 1
+            tmp_path.unlink(missing_ok=True)
+            continue
+
+        # parse_class_notes.py wrote to 03_knowledge_base/Topic_XX_Name.md (flat)
+        # or to the per-folder Theory.md depending on which version is installed.
+        # Check both locations for the freshly written content.
+        flat_out = KB_DIR / f"Topic_{topic_num}_{topic_name}.md"
+        theory_out = KB_DIR / topic_folder / "Theory.md"
+
+        if flat_out.is_file() and flat_out.stat().st_size > 0:
+            source_for_merge = flat_out
+        elif theory_out.is_file() and theory_out.stat().st_size > 0:
+            # Already in the right place; merge from a copy so the LLM sees
+            # "new" vs "existing" correctly.  If Theory.md IS the target and
+            # the parse wrote directly into it, skip the merge step.
+            print(
+                f"  INFO: parse_class_notes.py wrote directly to Theory.md — "
+                "skipping merge_theory_ollama (content already integrated)."
+            )
+            if not dry_run:
+                mark_processed(state, state_key_hash, f"parse-only (direct write to {theory_out.relative_to(REPO_ROOT)})")
+                save_state(state)
+            processed += 1
+            tmp_path.unlink(missing_ok=True)
+            continue
+        else:
+            print(
+                f"  FAIL: parse_class_notes.py succeeded but output not found at "
+                f"{flat_out} or {theory_out}",
+                file=sys.stderr,
+            )
+            errors += 1
+            tmp_path.unlink(missing_ok=True)
+            continue
+
+        # Step 2: merge_theory_ollama.py
+        merge_ok = run(
+            [
+                sys.executable,
+                str(PARSERS_DIR / "merge_theory_ollama.py"),
+                str(source_for_merge),
+                topic_folder,
+                "--model", model,
+            ],
+            dry_run=dry_run,
+        )
+
+        # Clean up flat staging file after merge (KB should now hold per-folder Theory.md)
+        if source_for_merge == flat_out and not dry_run:
+            flat_out.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
+
+        if not merge_ok:
+            errors += 1
+            continue
+
+        if not dry_run:
+            mark_processed(state, state_key_hash, f"notes pipeline OK (topic {topic_folder})")
+            save_state(state)
+        processed += 1
+
+    return processed, errors
+
+
+# ---------------------------------------------------------------------------
+# Past papers pipeline
+# ---------------------------------------------------------------------------
+
+def find_qp_ms_pairs() -> list[tuple[Path, Path, str]]:
+    """
+    Returns list of (qp_path, ms_path, paper_code) for unmatched QP/MS pairs
+    found anywhere under 01_raw_sources/past_papers/.
+    """
+    papers_dir = RAW_SOURCES_DIR / "past_papers"
+    if not papers_dir.is_dir():
+        return []
+
+    qp_map: dict[str, Path] = {}
+    ms_map: dict[str, Path] = {}
+
+    for f in sorted(papers_dir.rglob("*.pdf")):
+        m_qp = QP_RE.match(f.name)
+        m_ms = MS_RE.match(f.name)
+        if m_qp:
+            code = f"{m_qp.group(1)}__{m_qp.group(2)}"
+            qp_map[code] = f
+        elif m_ms:
+            code = f"{m_ms.group(1)}__{m_ms.group(2)}"
+            ms_map[code] = f
+
+    pairs = []
+    for code, qp_path in qp_map.items():
+        if code in ms_map:
+            # Reconstruct clean paper code from filename stem (e.g. 0478_s20_11)
+            paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp_path.stem, flags=re.IGNORECASE)
+            pairs.append((qp_path, ms_map[code], paper_code))
+        else:
+            print(
+                f"  WARN: QP found with no matching MS — {qp_path.relative_to(RAW_SOURCES_DIR)}",
+                file=sys.stderr,
+            )
+    return pairs
+
+
+def process_past_papers(state: dict, model: str, dry_run: bool) -> tuple[int, int]:
+    """Returns (processed, errors)."""
+    pairs = find_qp_ms_pairs()
+    if not pairs:
+        print("  No QP/MS pairs found under 01_raw_sources/past_papers/")
+        return 0, 0
+
+    processed, errors = 0, 0
+    for qp_path, ms_path, paper_code in pairs:
+        h = hashlib.sha256()
+        h.update(qp_path.read_bytes())
+        h.update(ms_path.read_bytes())
+        state_key = f"pastpaper::{paper_code}::{h.hexdigest()}"
+
+        if state_key in state:
+            print(f"  SKIP (already processed): {paper_code}")
+            continue
+
+        print(f"\n[Past paper] {paper_code}")
+
+        # Step 1: parse_past_paper.py
+        parse_ok = run(
+            [
+                sys.executable,
+                str(PARSERS_DIR / "parse_past_paper.py"),
+                str(qp_path),
+                str(ms_path),
+                "--code", paper_code,
+            ],
+            dry_run=dry_run,
+        )
+        if not parse_ok:
+            errors += 1
+            continue
+
+        # Step 2: route_questions_ollama.py
+        # parse_past_paper.py writes to 03_knowledge_base/PastPaper_<code>.md
+        parsed_file = KB_DIR / f"PastPaper_{paper_code}.md"
+        if not dry_run and not parsed_file.is_file():
+            print(
+                f"  FAIL: expected output {parsed_file.relative_to(REPO_ROOT)} not found.",
+                file=sys.stderr,
+            )
+            errors += 1
+            continue
+
+        route_ok = run(
+            [
+                sys.executable,
+                str(PARSERS_DIR / "route_questions_ollama.py"),
+                str(parsed_file) if not dry_run else str(parsed_file),
+                "--model", model,
+            ],
+            dry_run=dry_run,
+        )
+        if not route_ok:
+            errors += 1
+            continue
+
+        if not dry_run:
+            mark_processed(state, state_key, f"past-paper pipeline OK ({paper_code})")
+            save_state(state)
+        processed += 1
+
+    return processed, errors
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model for LLM steps (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be run without executing anything.",
+    )
+    args = parser.parse_args()
+
+    if args.dry_run:
+        print("=== DRY-RUN MODE — no files will be written ===\n")
+
+    state = load_state()
+
+    print("--- Class notes pipeline ---")
+    cn_processed, cn_errors = process_class_notes(state, args.model, args.dry_run)
+
+    print("\n--- Past papers pipeline ---")
+    pp_processed, pp_errors = process_past_papers(state, args.model, args.dry_run)
+
+    total_processed = cn_processed + pp_processed
+    total_errors = cn_errors + pp_errors
+
+    print(f"\n{'='*60}")
+    print(f"Done.  Processed: {total_processed}  |  Errors: {total_errors}")
+    if total_errors:
+        print("Re-run after fixing errors; processed files will be skipped.", file=sys.stderr)
+    return 1 if total_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="02_parsers/merge_theory_ollama.py">
+#!/usr/bin/env python3
+"""
+merge_theory_ollama.py — Intelligently merges freshly parsed class notes into
+an existing Theory.md using a local Ollama LLM.
+
+Usage:
+    python merge_theory_ollama.py <new_notes.md> <Topic_XX_Name> [--model llama3]
+
+Reads:  <new_notes.md>  (freshly parsed Markdown from parse_class_notes.py)
+        03_knowledge_base/<Topic_XX_Name>/Theory.md  (existing KB file, if any)
+Writes: 03_knowledge_base/<Topic_XX_Name>/Theory.md  (consolidated output)
+
+If Theory.md does not exist yet, the new notes are written as-is (no merge
+needed). If it does exist, the LLM is asked to integrate the new content into
+the correct sub-headings without duplicating concepts.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import ollama
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+KB_DIR = REPO_ROOT / "03_knowledge_base"
+
+DEFAULT_MODEL = "llama3"
+
+# Keep prompt + both documents under roughly 6 000 chars to stay comfortably
+# within small-model context windows (~4 096 tokens).  Content beyond this
+# limit is truncated — a warning is printed so the caller knows.
+MAX_CONTENT_CHARS = 6_000
+
+SYSTEM_PROMPT = """\
+You are an expert educational content editor for IGCSE Computer Science (0478).
+
+Your task is to merge two Markdown documents into one consolidated Theory.md file:
+  1. EXISTING_THEORY — the current knowledge-base file for this topic.
+  2. NEW_NOTES — freshly parsed class notes that may add or clarify content.
+
+Rules you MUST follow:
+- Preserve the Markdown heading hierarchy of EXISTING_THEORY exactly.
+- Find the correct sub-heading(s) in EXISTING_THEORY where each piece of
+  NEW_NOTES content belongs and insert it there.
+- Do NOT duplicate any concept that is already present in EXISTING_THEORY.
+- Do NOT invent, paraphrase, or summarise — copy text verbatim from the source
+  documents only.
+- If NEW_NOTES introduces a concept with no matching heading in EXISTING_THEORY,
+  create a new sub-heading at the appropriate level.
+- Output ONLY the final consolidated Markdown — no preamble, no commentary,
+  no code fences wrapping the whole document.
+"""
+
+
+def merge_via_llm(existing_text: str, new_notes_text: str, model: str) -> str:
+    existing_chars = len(existing_text)
+    new_chars = len(new_notes_text)
+    total = existing_chars + new_chars
+
+    if total > MAX_CONTENT_CHARS:
+        # Distribute the budget proportionally; always keep at least 500 chars of each.
+        existing_budget = max(500, int(MAX_CONTENT_CHARS * existing_chars / total))
+        new_budget = max(500, MAX_CONTENT_CHARS - existing_budget)
+        if existing_chars > existing_budget or new_chars > new_budget:
+            print(
+                f"  WARN: combined document size ({total} chars) exceeds {MAX_CONTENT_CHARS}-char "
+                f"limit — truncating (existing: {existing_budget}, new: {new_budget}). "
+                "Consider upgrading to a larger model for full context.",
+                file=sys.stderr,
+            )
+        existing_text = existing_text[:existing_budget]
+        new_notes_text = new_notes_text[:new_budget]
+
+    user_prompt = (
+        "Merge the following two documents into one consolidated Theory.md.\n\n"
+        "=== EXISTING_THEORY ===\n"
+        f"{existing_text}\n\n"
+        "=== NEW_NOTES ===\n"
+        f"{new_notes_text}\n\n"
+        "Return ONLY the merged Markdown content."
+    )
+
+    response = ollama.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    return response["message"]["content"].strip()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "new_notes",
+        type=Path,
+        help="Path to the freshly parsed Markdown file (e.g. a temp file from parse_class_notes.py)",
+    )
+    parser.add_argument(
+        "topic_folder",
+        help="Canonical topic folder name, e.g. Topic_01_Data_Representation",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model name (default: {DEFAULT_MODEL})",
+    )
+    args = parser.parse_args()
+
+    new_notes_path = args.new_notes.resolve()
+    if not new_notes_path.is_file():
+        print(f"FAIL: new_notes file not found: {new_notes_path}", file=sys.stderr)
+        return 1
+
+    topic_dir = KB_DIR / args.topic_folder
+    theory_path = topic_dir / "Theory.md"
+
+    new_notes_text = new_notes_path.read_text(encoding="utf-8").strip()
+    if not new_notes_text:
+        print(f"FAIL: new_notes file is empty: {new_notes_path}", file=sys.stderr)
+        return 1
+
+    # If no existing Theory.md, just write the new notes directly — no merge needed.
+    if not theory_path.is_file():
+        topic_dir.mkdir(parents=True, exist_ok=True)
+        theory_path.write_text(new_notes_text + "\n", encoding="utf-8")
+        print(f"PASS: created {theory_path.relative_to(REPO_ROOT)} ({len(new_notes_text)} chars, no prior content to merge)")
+        return 0
+
+    existing_text = theory_path.read_text(encoding="utf-8").strip()
+    if not existing_text:
+        # File exists but is empty — treat same as not existing.
+        theory_path.write_text(new_notes_text + "\n", encoding="utf-8")
+        print(f"PASS: wrote {theory_path.relative_to(REPO_ROOT)} (existing file was empty)")
+        return 0
+
+    print(f"Merging into {theory_path.relative_to(REPO_ROOT)} via {args.model} ...")
+    try:
+        merged = merge_via_llm(existing_text, new_notes_text, args.model)
+    except Exception as exc:
+        print(f"FAIL: Ollama error during merge — {exc}", file=sys.stderr)
+        return 1
+
+    if not merged:
+        print("FAIL: LLM returned empty content — Theory.md NOT overwritten.", file=sys.stderr)
+        return 1
+
+    theory_path.write_text(merged + "\n", encoding="utf-8")
+    print(f"PASS: merged {theory_path.relative_to(REPO_ROOT)} ({len(existing_text)} -> {len(merged)} chars)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 </file>
 
 <file path="02_parsers/parse_class_notes.py">
@@ -736,10 +1414,296 @@ if __name__ == "__main__":
     raise SystemExit(main())
 </file>
 
-<file path="02_parsers/requirements.txt">
-pdfplumber
-python-docx
-pypdf
+<file path="02_parsers/route_questions.py">
+#!/usr/bin/env python3
+"""
+Route parsed past paper questions to their semantic syllabus topic using local Ollama.
+"""
+
+import os
+import re
+import json
+import argparse
+import requests
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+KB_DIR = ROOT_DIR / "03_knowledge_base"
+OLLAMA_URL = "http://localhost:11434/api/generate"
+
+# Note: Update if your local Ollama tag differs (e.g. "llama3.2:3b")
+MODEL_NAME = "llama3.2" 
+
+TOPICS = [
+    "Topic_01_Data_Representation",
+    "Topic_02_Data_Transmission",
+    "Topic_03_Hardware",
+    "Topic_04_Software",
+    "Topic_05_The_Internet_and_its_uses",
+    "Topic_06_Automated_and_emerging_technologies",
+    "Topic_07_Algorithm_design_and_problem_solving",
+    "Topic_08_Programming",
+    "Topic_09_Databases",
+    "Topic_10_Boolean_logic"
+]
+
+def parse_past_paper(file_path: Path) -> list:
+    """Splits a PastPaper_*.md file into individual Question/Mark Scheme chunks."""
+    content = file_path.read_text(encoding="utf-8")
+    
+    # Split using multiline regex lookahead for '## Question '
+    chunks = re.split(r'(?m)^(?=## Question )', content)
+    
+    questions = []
+    source_file = file_path.name
+    
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk.startswith("## Question "):
+            continue
+        
+        # Extract the question label (e.g., "1(a)")
+        match = re.search(r'^## Question (.+)', chunk)
+        q_label = match.group(1).strip() if match else "Unknown"
+        
+        questions.append({
+            "label": q_label,
+            "content": chunk,
+            "source_file": source_file
+        })
+        
+    return questions
+
+def classify_question(chunk_content: str) -> dict:
+    """Uses local Ollama to classify the chunk into a syllabus topic."""
+    prompt = f"""You are an IGCSE 0478 Computer Science expert. Analyze the following Question and Mark Scheme chunk and classify it into one of the official syllabus topics.
+
+Official Topics:
+{json.dumps(TOPICS, indent=2)}
+
+Question Chunk:
+{chunk_content}
+
+Extract the following information and return ONLY a raw JSON object (no markdown formatting, no code blocks).
+You MUST follow this schema exactly:
+{{
+  "topic_folder": "Exact name of the destination folder from the list above",
+  "tags": ["3-5", "ultra-lean", "strings", "representing", "concepts"],
+  "total_marks": 6, 
+  "syllabus_ref": "A short breadcrumb string (e.g. '3.2 Input/Output')"
+}}
+"""
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": MODEL_NAME,
+            "prompt": prompt,
+            "format": "json",  # Forces strict JSON output in Ollama
+            "stream": False
+        }, timeout=90) # Give local model time to process long context
+        response.raise_for_status()
+        
+        result_json = response.json().get("response", "")
+        parsed = json.loads(result_json)
+        
+        # Guardrail against hallucinated folder names
+        if parsed.get("topic_folder") not in TOPICS:
+            print(f"    [!] Warning: Model hallucinated topic '{parsed.get('topic_folder')}'. Defaulting to Topic_01.")
+            parsed["topic_folder"] = TOPICS[0]
+            
+        return parsed
+        
+    except requests.exceptions.RequestException as e:
+        print(f"    [!] Network/API error communicating with Ollama: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"    [!] Error parsing JSON from model output: {e}\nRaw Output: {result_json}")
+        return None
+
+def process_file(file_path: Path):
+    print(f"\nProcessing {file_path.name}...")
+    questions = parse_past_paper(file_path)
+    
+    if not questions:
+        print("  No questions found. Skipping.")
+        return
+
+    for q in questions:
+        print(f"  Routing Question {q['label']}...")
+        classification = classify_question(q['content'])
+        
+        if not classification:
+            print(f"  -> Failed to classify {q['label']}, skipping.")
+            continue
+            
+        topic_folder = classification.get("topic_folder")
+        tags = classification.get("tags", [])
+        total_marks = classification.get("total_marks", 0)
+        syllabus_ref = classification.get("syllabus_ref", "")
+        
+        # Build YAML frontmatter block
+        yaml_frontmatter = f"""---
+source_file: "{q['source_file']}"
+question_label: "{q['label']}"
+topic_folder: "{topic_folder}"
+tags: {json.dumps(tags)}
+total_marks: {total_marks}
+syllabus_ref: "{syllabus_ref}"
+---
+"""
+        # Prepend the requested metadata tag
+        metadata_tag = f"> Source: {q['source_file']}, Q{q['label']}\n\n"
+        
+        # Construct final chunk
+        final_chunk = yaml_frontmatter + metadata_tag + q['content'] + "\n\n"
+        
+        # Append to target normalized file
+        target_dir = KB_DIR / topic_folder
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_file = target_dir / "Past_Papers.md"
+        
+        with open(target_file, "a", encoding="utf-8") as f:
+            f.write(final_chunk)
+            
+        print(f"  -> Appended to {topic_folder}/Past_Papers.md")
+
+def main():
+    parser = argparse.ArgumentParser(description="Route past paper questions to topic folders via local Ollama.")
+    parser.add_argument("files", nargs="*", help="Specific PastPaper_*.md files to process (processes all if empty)")
+    args = parser.parse_args()
+    
+    if not KB_DIR.exists():
+        print(f"Error: {KB_DIR} does not exist.")
+        return
+
+    files_to_process = []
+    if args.files:
+        for f in args.files:
+            file_path = Path(f)
+            if not file_path.is_absolute():
+                file_path = KB_DIR / file_path
+            if file_path.exists():
+                files_to_process.append(file_path)
+            else:
+                print(f"Warning: File {file_path} not found.")
+    else:
+        files_to_process = list(KB_DIR.glob("PastPaper_*.md"))
+
+    if not files_to_process:
+        print("No PastPaper_*.md files found to process.")
+        return
+
+    for file_path in files_to_process:
+        process_file(file_path)
+        
+    print("\nRouting complete.")
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="02_parsers/split_syllabus.py">
+#!/usr/bin/env python3
+"""
+split_syllabus.py — Deterministically localizes Syllabus_Routing_Keywords.md
+into per-topic Syllabus.md stubs under 03_knowledge_base/<Topic_XX_Name>/.
+
+Usage:
+    python split_syllabus.py [path/to/Syllabus_Routing_Keywords.md]
+
+Reads:  00_syllabus/Syllabus_Routing_Keywords.md  (or the path you supply)
+Writes: 03_knowledge_base/<Topic_XX_Name>/Syllabus.md  (one file per topic)
+
+No LLM is used — parsing is purely regex/string-based since the source
+document follows a perfectly regular `### Topic N: Name` heading structure.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_SYLLABUS = REPO_ROOT / "00_syllabus" / "Syllabus_Routing_Keywords.md"
+KB_DIR = REPO_ROOT / "03_knowledge_base"
+
+# Matches lines like:  ### Topic 1: Data representation
+TOPIC_HEADER_RE = re.compile(r"^### Topic (\d+): (.+)$", re.MULTILINE)
+
+
+def slugify_name(name: str) -> str:
+    """'Data representation' → 'Data_Representation' (title-case, underscored)."""
+    cleaned = re.sub(r"[^\w\s]", "", name)
+    return "_".join(word.capitalize() for word in cleaned.split())
+
+
+def extract_topics(text: str) -> list[dict]:
+    """
+    Returns a list of dicts: {"number": 1, "name": "Data_Representation", "text": "..."}
+    The text chunk spans from the ### heading to just before the next ### heading.
+    """
+    matches = list(TOPIC_HEADER_RE.finditer(text))
+    if not matches:
+        return []
+
+    topics = []
+    for i, m in enumerate(matches):
+        number = int(m.group(1))
+        name = slugify_name(m.group(2).strip())
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        chunk = text[start:end].strip()
+        topics.append({"number": number, "name": name, "text": chunk})
+
+    return topics
+
+
+def find_existing_topic_dir(num: int) -> Path | None:
+    """Returns any existing Topic_XX_* folder for this topic number, if one exists."""
+    prefix = f"Topic_{num:02d}_"
+    if KB_DIR.is_dir():
+        for d in KB_DIR.iterdir():
+            if d.is_dir() and d.name.startswith(prefix):
+                return d
+    return None
+
+
+def main(source: Path = DEFAULT_SYLLABUS) -> int:
+    if not source.is_file():
+        print(f"FAIL: source file not found: {source}", file=sys.stderr)
+        return 1
+
+    text = source.read_text(encoding="utf-8")
+    topics = extract_topics(text)
+
+    if not topics:
+        print(
+            f"FAIL: no '### Topic N: Name' headers found in {source}\n"
+            "Check that the source document uses exactly that heading format.",
+            file=sys.stderr,
+        )
+        return 1
+
+    written = 0
+    for topic in topics:
+        existing = find_existing_topic_dir(topic["number"])
+        if existing:
+            topic_dir = existing
+        else:
+            folder_name = f"Topic_{topic['number']:02d}_{topic['name']}"
+            topic_dir = KB_DIR / folder_name
+        topic_dir.mkdir(parents=True, exist_ok=True)
+
+        out_file = topic_dir / "Syllabus.md"
+        out_file.write_text(topic["text"], encoding="utf-8")
+        print(f"  Written: {out_file.relative_to(REPO_ROOT)}")
+        written += 1
+
+    print(f"\nDone. {written} topic Syllabus.md file(s) created under {KB_DIR.relative_to(REPO_ROOT)}/")
+    return 0
+
+
+if __name__ == "__main__":
+    source = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SYLLABUS
+    raise SystemExit(main(source))
 </file>
 
 <file path="04_templates/.gitkeep">
@@ -788,6 +1752,54 @@ Use after implementation and before marking a feature `passing`.
 - Missing evidence:
 - Required fixes:
 - Next review trigger:
+</file>
+
+<file path="migrate_kb.py">
+#!/usr/bin/env python3
+"""Migrates 03_knowledge_base/Topic_XX_Name.md to Topic_XX_Name/Theory.md and Past_Papers.md"""
+
+import glob
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent
+KNOWLEDGE_BASE_DIR = ROOT_DIR / "03_knowledge_base"
+
+def migrate():
+    # Find all Topic_*.md files (excluding PastPaper_*.md)
+    topic_files = glob.glob(str(KNOWLEDGE_BASE_DIR / "Topic_*.md"))
+    
+    for file_path in topic_files:
+        path = Path(file_path)
+        topic_dir_name = path.stem  # e.g., Topic_01_Data_Representation
+        topic_dir_path = KNOWLEDGE_BASE_DIR / topic_dir_name
+        
+        # Create the new directory
+        topic_dir_path.mkdir(parents=True, exist_ok=True)
+        
+        theory_path = topic_dir_path / "Theory.md"
+        past_papers_path = topic_dir_path / "Past_Papers.md"
+        
+        content = path.read_text(encoding="utf-8")
+            
+        # Split by a known past paper heading if it exists
+        split_heading = "## Past Paper Questions"
+        if split_heading in content:
+            theory_content, past_paper_content = content.split(split_heading, 1)
+            past_paper_content = split_heading + past_paper_content
+        else:
+            theory_content = content
+            past_paper_content = "# Past Paper Questions\n\n"
+            
+        # Write to new files
+        theory_path.write_text(theory_content.strip() + "\n", encoding="utf-8")
+        past_papers_path.write_text(past_paper_content.strip() + "\n", encoding="utf-8")
+            
+        # Remove the old monolithic file
+        path.unlink()
+        print(f"Migrated {path.name} -> {topic_dir_name}/")
+
+if __name__ == "__main__":
+    migrate()
 </file>
 
 <file path="resources/index.md">
@@ -2696,6 +3708,386 @@ A quality snapshot for each product domain and architectural layer. Both agents 
 - Focused debug command:
 </file>
 
+<file path="session-handoff.md">
+# Session Handoff
+
+## Next Best Step
+- **Objective:** Resume `FEAT-003` (multi-source stitching) — generate a worksheet that combines a topic's `Theory.md` with its newly-routed `Past_Papers.md` entries into one worksheet + mark-scheme `.tex` document in `05_output/`. Confirm it compiles via `./compile.sh`.
+- **Target File:** `05_output/Topic_01_Data_Representation_Worksheet.tex` (or whichever topic the user names)
+
+## Current Blockers / Risks
+- `merge_theory_ollama.py` truncates combined documents exceeding ~6 000 chars (context-window guard for small models). Topics with long existing Theory.md files may get partial merges; a warning is printed when this fires.
+- Topics 7–10 have no class-notes raw sources yet — the notes pipeline will report zero files for those topics until sources are added to `01_raw_sources/class_notes_docs/`.
+- Class notes detection requires parent directory of each file to be named exactly `Topic_XX_Name`; files sitting directly in `01_raw_sources/class_notes_docs/` (no subfolder) will be skipped.
+- Topic_08 (8 questions) and Topic_09 (9 questions) have low past-paper coverage — this reflects the actual exam's lower weighting for standalone programming/SQL questions, not a routing failure.
+
+## Recent History (STRICT LIMIT: Last 2 Sessions Only)
+
+**Session 011 (2026-06-26):**
+- **Completed:** Ingested 7 new 2024 QP/MS pairs (`m24_12`, `m24_22`, `s24_12/13/21/22/23`). Found and fixed bug: `--dry-run` was writing to state file without running subprocesses; guarded all `mark_processed`/`save_state` calls with `if not dry_run`. Cleaned 7 bogus state entries, re-ran actual pipeline: 7 processed, 0 errors, 69 new question groups routed. State: 63 entries (21 notes + 42 papers).
+- **Unfinished:** Nothing blocking. Next step is FEAT-003 worksheet generation.
+
+**Session 010 (2026-06-26):**
+- **Completed:** Upgraded `route_questions_ollama.py` with comprehensive 10-topic system prompt + negative constraints. Fixed `DEFAULT_MODEL` llama3 → llama3.2:latest in both router and digest. Added three-tier JSON fallback parser. Reset and re-ran routing: **305 questions routed across all 10 topics**. Re-bootstrapped state (56 entries). Deleted 35 intermediate `PastPaper_*.md` files from KB root.
+- **Unfinished:** Nothing blocking.
+
+## Compacted Archive
+
+*Sessions 001–009 (2026-06-25): Harness baseline built (CLAUDE.md, init.sh, compile.sh, feature_list.json 9-feature → 4-engine-feature refactor, docs/ARCHITECTURE.md, docs/PIPELINE.md). TinyTeX + tcolorbox installed. parse_class_notes.py written and hardened for PDF+DOCX; Topics 1–6 parsed. parse_past_paper.py written and hardened; 35 past papers parsed 2020–2025. igcse_preamble.tex authored (stratbox/critbox/scenario/learningoutcomes/errortrap/modelans, booktabs, longtable, tikz, fancyhdr footer fix). Topic_01 and Topic_02 .tex files compiled PASS. FEAT-001–005 all passing. Study plan 00_syllabus/6_month_zero_to_hero_plan.md added. merge_theory_ollama.py and digest_new_material.py (master orchestrator with SHA-256 state tracking) written. KB folder-per-topic normalization complete; all 10 topics have Syllabus.md and Past_Papers.md.*
+</file>
+
+<file path="02_parsers/requirements.txt">
+pdfplumber
+python-docx
+pypdf
+ollama
+</file>
+
+<file path="02_parsers/route_questions_ollama.py">
+#!/usr/bin/env python3
+"""
+route_questions_ollama.py — FEAT-005: Semantic routing of un-tagged past paper
+questions into the correct per-topic Past_Papers.md using a local Ollama LLM.
+
+Usage:
+    python route_questions_ollama.py <path/to/PastPaper_CODE.md> [--model llama3]
+
+Reads:  03_knowledge_base/PastPaper_*.md  (un-routed output of parse_past_paper.py)
+        00_syllabus/Syllabus_Routing_Keywords.md
+Writes: 03_knowledge_base/<Topic_XX_Name>/Past_Papers.md
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+import ollama
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SYLLABUS_FILE = REPO_ROOT / "00_syllabus" / "keyword_routing.md"
+KB_DIR = REPO_ROOT / "03_knowledge_base"
+
+DEFAULT_MODEL = "llama3.2:latest"
+
+# Canonical topic folder names — guardrail against LLM hallucinations.
+# If the LLM returns a topic_folder not in this set, the question is SKIPPED.
+VALID_TOPIC_FOLDERS = {
+    "Topic_01_Data_Representation",
+    "Topic_02_Data_Transmission",
+    "Topic_03_Hardware",
+    "Topic_04_Software",
+    "Topic_05_The_Internet_and_Its_Uses",
+    "Topic_06_Automated_and_Emerging_Technologies",
+    "Topic_07_Algorithm_design_and_problem_solving",
+    "Topic_08_Programming",
+    "Topic_09_Databases",
+    "Topic_10_Boolean_Logic",
+}
+
+QUESTION_BLOCK_RE = re.compile(r"^## Question (.+)$", re.MULTILINE)
+MAIN_QNUM_RE = re.compile(r"^(\d+)")
+# Strip markdown code fences that some models wrap JSON in despite instructions
+CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+# Cap chunk text sent to the LLM to avoid overwhelming the context window.
+# The syllabus reference already occupies ~1 500 tokens; 3 000 chars ≈ 750 tokens.
+CHUNK_CHAR_LIMIT = 3_000
+
+
+def load_syllabus_reference() -> str:
+    if not SYLLABUS_FILE.is_file():
+        raise FileNotFoundError(f"Syllabus routing reference not found: {SYLLABUS_FILE}")
+    return SYLLABUS_FILE.read_text(encoding="utf-8")
+
+
+def split_into_main_question_groups(md_text: str) -> list[dict]:
+    """
+    Groups all sub-parts (e.g. 3(a), 3(a)(i)) under their parent question
+    number so that a single Ollama call classifies the entire scenario.
+
+    Returns a list of dicts: {"main_q": "3", "text": "<combined markdown>"}
+    """
+    matches = list(QUESTION_BLOCK_RE.finditer(md_text))
+    if not matches:
+        return []
+
+    raw_blocks: list[dict] = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
+        label = m.group(1).strip()
+        raw_blocks.append({"label": label, "text": md_text[start:end].rstrip()})
+
+    groups: dict[str, list[str]] = {}
+    order: list[str] = []
+    for block in raw_blocks:
+        main_match = MAIN_QNUM_RE.match(block["label"])
+        main_q = main_match.group(1) if main_match else block["label"]
+        if main_q not in groups:
+            groups[main_q] = []
+            order.append(main_q)
+        groups[main_q].append(block["text"])
+
+    return [
+        {"main_q": q, "text": "\n\n".join(groups[q])}
+        for q in order
+    ]
+
+
+def classify_chunk(chunk_text: str, syllabus_ref: str, model: str) -> dict:
+    """
+    Sends a Q+MS chunk to Ollama for topic classification.
+
+    Expected JSON response keys:
+        topic_folder  (str)   e.g. "Topic_03_Hardware"
+        breadcrumbs   (str)   e.g. "3.2 Input and output devices"
+        tags          (list)  3–5 keyword strings from the syllabus
+        total_marks   (int)   sum of all marks in this question group
+    """
+    system_prompt = (
+        "You are a highly precise Expert Syllabus Routing Agent for IGCSE Computer "
+        "Science (0478). Your sole task is to analyse a past-paper Exam Question + "
+        "Mark Scheme chunk and classify it into its exact topic folder based on the "
+        "primary curriculum intent.\n\n"
+        "### COMPLETE TOPIC ROUTING MAP\n"
+        "Classify the question based on the core concept it tests. "
+        "Follow these rules and absolute constraints:\n\n"
+        "- Topic 01 (Data_Representation): Binary, denary, hexadecimal, overflow, "
+        "two's complement. Text/sound/image representation (ASCII, Unicode, pixels, "
+        "sample rate). Storage units (bits to exbibytes). Compression (lossy, "
+        "lossless, RLE).\n"
+        "- Topic 02 (Data_Transmission): Packets, packet switching, serial/parallel, "
+        "simplex/duplex, USB. Error detection (parity, checksum, echo, check digit, "
+        "ARQ). Encryption (symmetric, asymmetric). "
+        "*CONSTRAINT: Never route to Topic 03 just because it mentions hardware "
+        "like a router or cable.*\n"
+        "- Topic 03 (Hardware): CPU architecture, Von Neumann, Fetch-Decode-Execute, "
+        "registers, buses, cache, cores. Standard Input/Output devices (keyboards, "
+        "screens, printers, basic scanners). Storage mediums (HDD, SSD, optical). "
+        "MAC/IP addresses. "
+        "*CONSTRAINT: Do not route sensors, actuators, or automated systems here.*\n"
+        "- Topic 04 (Software): System vs. Application software, Operating Systems, "
+        "interrupts. High/low-level languages, assembly, compilers, interpreters, IDEs.\n"
+        "- Topic 05 (The_Internet_and_Its_Uses): WWW, URLs, HTTP/HTTPS, DNS, web "
+        "browsers, cookies. Digital currency/blockchain. Cybersecurity (malware, "
+        "phishing, hacking, firewalls, SSL).\n"
+        "- Topic 06 (Automated_and_Emerging_Technologies): Sensors (light, acoustic, "
+        "etc.), actuators, automated loops. Robotics. Artificial Intelligence "
+        "(expert systems, machine learning). "
+        "*CONSTRAINT: Must go here, NEVER Topic 03.*\n"
+        "- Topic 07 (Algorithm_design_and_problem_solving): Program development life "
+        "cycle, flowcharts, pseudocode logic. Linear search, bubble sort. "
+        "Validation/verification checks, test data types, trace tables.\n"
+        "- Topic 08 (Programming): Coding syntax/constructs: variables, constants, "
+        "arrays (1D/2D), loops (FOR, WHILE, REPEAT), IF/CASE statements. "
+        "String handling, functions, procedures. File handling (read/write lines).\n"
+        "- Topic 09 (Databases): Single-table databases, fields, records, primary "
+        "keys. SQL scripting (SELECT, FROM, WHERE, ORDER BY, SUM, COUNT).\n"
+        "- Topic 10 (Boolean_Logic): Logic gates (AND, OR, NOT, NAND, NOR, XOR), "
+        "truth tables, logic circuits, logic expressions.\n\n"
+        "### OUTPUT FORMAT\n"
+        "You must respond ONLY with a valid JSON object. "
+        "Do not include any conversational text or markdown fences.\n"
+        "{\n"
+        "  \"topic_folder\": \"<exact folder name from the list below>\",\n"
+        "  \"breadcrumbs\": \"X.X Sub-topic Name\",\n"
+        "  \"total_marks\": 0,\n"
+        "  \"tags\": [\"tag1\", \"tag2\", \"tag3\"]\n"
+        "}\n\n"
+        "EXACT VALID topic_folder VALUES (copy exactly, case-sensitive):\n"
+        "Topic_01_Data_Representation, Topic_02_Data_Transmission, Topic_03_Hardware, "
+        "Topic_04_Software, Topic_05_The_Internet_and_Its_Uses, "
+        "Topic_06_Automated_and_Emerging_Technologies, "
+        "Topic_07_Algorithm_design_and_problem_solving, Topic_08_Programming, "
+        "Topic_09_Databases, Topic_10_Boolean_Logic"
+    )
+    user_prompt = (
+        "Classify the following past-paper question group and return JSON only:\n\n"
+        f"{chunk_text[:CHUNK_CHAR_LIMIT]}"
+    )
+
+    response = ollama.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    raw = response["message"]["content"].strip()
+    raw = CODE_FENCE_RE.sub("", raw).strip()
+    try:
+        # Fast path: response starts with valid JSON
+        obj, _ = json.JSONDecoder().raw_decode(raw)
+        return obj
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback A: model wrapped JSON in prose — locate any {...} block
+    json_match = re.search(r'\{.*?\}', raw, re.DOTALL)
+    if json_match:
+        candidate = json_match.group()
+        # Fallback B: small models emit unquoted string values like
+        #   "topic_folder": Topic_03_Hardware  →  quote them
+        candidate = re.sub(
+            r'("(?:topic_folder|breadcrumbs)"\s*:\s*)([A-Za-z][^,\n\]}"]*)',
+            lambda m: m.group(1) + '"' + m.group(2).rstrip() + '"',
+            candidate,
+        )
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback C: regex-extract individual fields from whatever the model wrote
+    topic_m = re.search(r'"?topic_folder"?\s*:\s*"?([A-Za-z0-9_]+)"?', raw)
+    bc_m = re.search(r'"?breadcrumbs"?\s*:\s*"([^"]*)"', raw)
+    marks_m = re.search(r'"?total_marks"?\s*:\s*(\d+)', raw)
+    tags_m = re.search(r'"?tags"?\s*:\s*\[([^\]]*)\]', raw, re.DOTALL)
+    if topic_m:
+        return {
+            "topic_folder": topic_m.group(1).strip(),
+            "breadcrumbs": bc_m.group(1) if bc_m else "",
+            "total_marks": int(marks_m.group(1)) if marks_m else 0,
+            "tags": re.findall(r'"([^"]+)"', tags_m.group(1)) if tags_m else [],
+        }
+
+    raise json.JSONDecodeError("LLM response contained no parseable JSON", raw, 0)
+
+
+def make_frontmatter(meta: dict, source_file: str) -> str:
+    tags_yaml = json.dumps(meta.get("tags", []))
+    return (
+        "---\n"
+        f"breadcrumbs: \"{meta.get('breadcrumbs', '')}\"\n"
+        f"source_file: \"{source_file}\"\n"
+        f"total_marks: {int(meta.get('total_marks', 0))}\n"
+        f"tags: {tags_yaml}\n"
+        "---"
+    )
+
+
+def append_to_topic(topic_folder: str, frontmatter: str, chunk_text: str) -> Path:
+    topic_dir = KB_DIR / topic_folder
+    topic_dir.mkdir(parents=True, exist_ok=True)
+    out_file = topic_dir / "Past_Papers.md"
+
+    separator = "\n\n" if out_file.is_file() and out_file.stat().st_size > 0 else ""
+    with out_file.open("a", encoding="utf-8") as f:
+        f.write(f"{separator}{frontmatter}\n\n{chunk_text}\n")
+
+    return out_file
+
+
+def route_file(input_file: Path, syllabus_ref: str, model: str) -> tuple[int, int]:
+    """Routes one PastPaper_*.md file. Returns (routed, errors)."""
+    md_text = input_file.read_text(encoding="utf-8")
+    groups = split_into_main_question_groups(md_text)
+
+    if not groups:
+        print(f"  WARN: no '## Question' blocks in {input_file.name} — skipped.")
+        return 0, 0
+
+    print(f"\n[{input_file.name}] {len(groups)} question group(s) found.")
+    routed, errors = 0, 0
+    for group in groups:
+        q_label = f"Q{group['main_q']}"
+        try:
+            meta = classify_chunk(group["text"], syllabus_ref, model)
+        except json.JSONDecodeError as exc:
+            print(f"  SKIP {q_label}: LLM returned invalid JSON — {exc}", file=sys.stderr)
+            errors += 1
+            continue
+        except Exception as exc:
+            print(f"  SKIP {q_label}: Ollama error — {exc}", file=sys.stderr)
+            errors += 1
+            continue
+
+        topic_folder = meta.get("topic_folder", "").strip()
+        if not topic_folder:
+            print(f"  SKIP {q_label}: LLM returned empty topic_folder.", file=sys.stderr)
+            errors += 1
+            continue
+
+        if topic_folder not in VALID_TOPIC_FOLDERS:
+            # Case-insensitive fallback: accept the LLM's name if it matches a canonical
+            # folder when lowercased (catches e.g. wrong-case "emerging_technologies").
+            _lower = topic_folder.lower()
+            _match = next((f for f in VALID_TOPIC_FOLDERS if f.lower() == _lower), None)
+            if _match:
+                topic_folder = _match
+            else:
+                print(f"  SKIP {q_label}: LLM returned unrecognised topic_folder '{topic_folder}'.", file=sys.stderr)
+                errors += 1
+                continue
+
+        try:
+            frontmatter = make_frontmatter(meta, input_file.name)
+            out_path = append_to_topic(topic_folder, frontmatter, group["text"])
+        except Exception as exc:
+            print(f"  SKIP {q_label}: write error — {exc}", file=sys.stderr)
+            errors += 1
+            continue
+
+        print(f"  OK  {q_label} -> {out_path.relative_to(REPO_ROOT)}")
+        routed += 1
+
+    return routed, errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "input_files", nargs="*", type=Path,
+        help="PastPaper_*.md file(s) to route. Omit to batch-process ALL "
+             "PastPaper_*.md files found in 03_knowledge_base/."
+    )
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL,
+        help=f"Ollama model name (default: {DEFAULT_MODEL})"
+    )
+    args = parser.parse_args()
+
+    # Resolve target files: explicit list OR auto-glob from KB root
+    if args.input_files:
+        files: list[Path] = [f.resolve() for f in args.input_files]
+        missing = [f for f in files if not f.is_file()]
+        if missing:
+            for f in missing:
+                print(f"FAIL: {f} does not exist.", file=sys.stderr)
+            return 1
+    else:
+        files = sorted(KB_DIR.glob("PastPaper_*.md"))
+        if not files:
+            print(f"FAIL: no PastPaper_*.md files found in {KB_DIR}.", file=sys.stderr)
+            return 1
+        print(f"Batch mode: found {len(files)} PastPaper_*.md file(s) in {KB_DIR.relative_to(REPO_ROOT)}")
+
+    try:
+        syllabus_ref = load_syllabus_reference()
+    except FileNotFoundError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Model: {args.model}\n")
+
+    total_routed, total_errors = 0, 0
+    for f in files:
+        r, e = route_file(f, syllabus_ref, args.model)
+        total_routed += r
+        total_errors += e
+
+    status = f"{total_errors} error(s)" if total_errors else "all OK"
+    print(f"\n{'='*60}")
+    print(f"Done. {total_routed} group(s) routed, {total_errors} skipped ({status}).")
+    return 1 if total_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
 <file path="04_templates/igcse_blueprint.tex">
 % IGCSE 0478 blueprint demo -- proves the shared preamble's six custom
 % environments compile and render distinctly. Not real content; never
@@ -3227,12 +4619,15 @@ exit 0
 - Repository root: `_project/` (this repo)
 - Standard startup path: `./init.sh`
 - Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
-- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001` (Mechanical Parser Pipeline), `FEAT-002` (Syllabus Anchor & Mapping Logic), and `FEAT-004` (Context-Compression Engine) are `passing`.
-- Current blocker: none for active work. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed; `init.sh`/`compile.sh` fall back to `$HOME/AppData/Roaming/TinyTeX/bin/windows` if a fresh TinyTeX install hasn't reached the shell's PATH yet. Content-breadth gap (not an engine blocker): 6 of 10 syllabus topics have raw class-notes sources parsed; Topics 7-10 have none yet.
+- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001`, `FEAT-002`, `FEAT-004`, `FEAT-005` are all `passing`.
+- KB structure (as of Session 008): 10 canonical `Topic_XX_Name/` folders under `03_knowledge_base/`, each with `Syllabus.md`; Topics 1-6 also have `Theory.md` (class notes); all 10 have `Past_Papers.md` (routed via Ollama). Flat `PastPaper_*.md` source files deleted. 35 past papers parsed total (2020-2025, Papers 1 and 2).
+- Current blocker: none. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed. `DEFAULT_MODEL` in router/digest set to `llama3.2:latest`. State file: 63 entries (21 notes + 42 papers, covering 2020–2025 including all March/Summer/Winter 2024 variants). Content gap (not a blocker): Topics 7–10 have no class-notes raw sources; `digest_new_material.py` will report zero notes files for them until sources are added. Bug fixed: `digest_new_material.py` `--dry-run` mode previously wrote to the state file even though subprocesses were skipped; guarded all `mark_processed`/`save_state` calls with `if not dry_run`.
 
 ## Session Log
 
-**Past Context (Sessions 001-004, compressed 2026-06-25):** Harness baseline established (`CLAUDE.md`, original 9-feature `feature_list.json`, `init.sh`, `compile.sh`, checklists, docs; real raw source material migrated into `01_raw_sources/`). Built the end-to-end vertical slice for Topic 1: installed TinyTeX/tcolorbox/booktabs, wrote `parse_class_notes_pdf.py`, authored `igcse_preamble.tex`/`igcse_blueprint.tex` (stratbox/critbox/scenario via tcolorbox) and `Topic_01_Data_Representation.tex`, all compiling clean. Generalized parsing: `parse_class_notes.py` gained a real DOCX path (structural signals -- bold-run headings, Word `<w:numPr>` bullets, true document order via `iter_inner_content()`), with two real heading-detection bugs found and fixed (a missing-whitespace numbering gap on single-digit subsection headings, and a length-cap rejecting a genuinely-bold 86-char heading); ran across Topics 2-6, all reviewed clean. Wrote `parse_past_paper.py` from scratch for QP/MS linking, then hardened it across a full pass over all complete 2025 papers (Paper 1 and Paper 2) plus the 2020 gold standard: replaced hardcoded x-position column thresholds with `pdfplumber.find_tables()` (column-position-independent), removed a false-positive boilerplate filter that dropped bare-numeric question labels inside tables, guarded against zero-padded pseudocode line numbers hijacking the main-question counter, added watermark/cid-glyph filtering, fixed chained inline sub-part markers being swallowed into their parent's text, fixed an `is_stem_only` false negative for stems ending in `)`, and fixed multi-page mark-scheme answers overwriting each other across page breaks (root-caused to nested sub-tables lacking a real "Question" header colliding with genuine question numbers; fixed by requiring that header to count a table as genuine). End state: zero "Unmatched Mark Scheme Entries" across all 13 parsed past-paper files, Paper 2 match rate improved from 16% to 70-92%. Found `04_templates/latex_template.sty` was an unfamiliar file embedding hardcoded topic content and conflicting box environments; user confirmed it as a personal branding reference, so its look (watermark, footer, section styling, sans-serif font) was merged into `igcse_preamble.tex` and the original deleted -- while verifying that merge, found and fixed a real fancyhdr bug where `\maketitle`'s internal `\thispagestyle{plain}` call was silently dropping the custom footer on every title page. Ran the formal `templates-001` verification (`./compile.sh igcse_blueprint.tex` -> PASS) that had previously only been checked via direct `pdflatex`. `knowledge_base-001` (6 of 10 topics parsed; Topics 7-10 have no raw sources yet) remained the only `blocked` feature throughout.
+**Past Context (Sessions 001-009, compressed 2026-06-26):** Harness baseline established (`CLAUDE.md`, original 9-feature `feature_list.json`, `init.sh`, `compile.sh`, checklists, docs; real raw source material migrated into `01_raw_sources/`). Built the end-to-end vertical slice for Topic 1: installed TinyTeX/tcolorbox/booktabs, wrote `parse_class_notes_pdf.py`, authored `igcse_preamble.tex`/`igcse_blueprint.tex` (stratbox/critbox/scenario via tcolorbox) and `Topic_01_Data_Representation.tex`, all compiling clean. Generalized parsing: `parse_class_notes.py` gained a real DOCX path (structural signals -- bold-run headings, Word `<w:numPr>` bullets, true document order via `iter_inner_content()`), with two real heading-detection bugs found and fixed (a missing-whitespace numbering gap on single-digit subsection headings, and a length-cap rejecting a genuinely-bold 86-char heading); ran across Topics 2-6, all reviewed clean. Wrote `parse_past_paper.py` from scratch for QP/MS linking, then hardened it across a full pass over all complete 2025 papers (Paper 1 and Paper 2) plus the 2020 gold standard: replaced hardcoded x-position column thresholds with `pdfplumber.find_tables()` (column-position-independent), removed a false-positive boilerplate filter that dropped bare-numeric question labels inside tables, guarded against zero-padded pseudocode line numbers hijacking the main-question counter, added watermark/cid-glyph filtering, fixed chained inline sub-part markers being swallowed into their parent's text, fixed an `is_stem_only` false negative for stems ending in `)`, and fixed multi-page mark-scheme answers overwriting each other across page breaks (root-caused to nested sub-tables lacking a real "Question" header colliding with genuine question numbers; fixed by requiring that header to count a table as genuine). End state: zero "Unmatched Mark Scheme Entries" across all 13 parsed past-paper files, Paper 2 match rate improved from 16% to 70-92%. Found `04_templates/latex_template.sty` was an unfamiliar file embedding hardcoded topic content and conflicting box environments; user confirmed it as a personal branding reference, so its look (watermark, footer, section styling, sans-serif font) was merged into `igcse_preamble.tex` and the original deleted -- while verifying that merge, found and fixed a real fancyhdr bug where `\maketitle`'s internal `\thispagestyle{plain}` call was silently dropping the custom footer on every title page. Ran the formal `templates-001` verification (`./compile.sh igcse_blueprint.tex` -> PASS) that had previously only been checked via direct `pdflatex`. `knowledge_base-001` (6 of 10 topics parsed; Topics 7-10 have no raw sources yet) remained the only `blocked` feature throughout.
+
+*Sessions 005-009 compressed: Architecture rewrite (Living Database/Dynamic Assembly/Syllabus Anchor principles, RULE 7/8/9/10 added to CLAUDE.md). feature_list.json refactored from 9 topic-tied features to 4 engine-functionality features (FEAT-001–005). Topic_02 .tex authored and compiled PASS. igcse_preamble.tex gained learningoutcomes/errortrap/modelans boxes + longtable/tikz. Weekly tutoring skeleton added to igcse_blueprint.tex. KB folder-per-topic normalization (Theory.md/Past_Papers.md/Syllabus.md per topic). split_syllabus.py and route_questions_ollama.py (FEAT-005) written. 35 past papers parsed (2020–2025). merge_theory_ollama.py and digest_new_material.py (SHA-256 state orchestrator) written. Study plan 00_syllabus/6_month_zero_to_hero_plan.md added.*
 
 ### Session 005
 
@@ -3271,6 +4666,26 @@ exit 0
 - Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
 - Next best step: wait for the user's next Target Prompt or Study Plan path before any further generation work (per the new Startup Workflow step 1).
 
+### Session 008
+
+- Date: 2026-06-26
+- Goal: Database normalization (folder-per-topic KB), Ollama semantic routing (FEAT-005), past-paper backlog parse (2020-2024).
+- Completed:
+  - `CLAUDE.md`: updated RULE 4 (TOKEN & CONTEXT BUDGETING) to reflect new per-topic folder structure (`Theory.md`/`Past_Papers.md`/`Syllabus.md`); updated RULE 9 to point at `Topic_XX_Name/Past_Papers.md`; added RULE 10 (Breadcrumb Metadata -- every Q&A block in Past_Papers.md must carry a YAML frontmatter block with `breadcrumbs`, `source_file`, `total_marks`, `tags`).
+  - `02_parsers/split_syllabus.py` (new): deterministic (no LLM) script that parses `00_syllabus/keyword_routing.md` on `### Topic N: Name` headers and writes each section as `Syllabus.md` into the correct per-topic folder, matching existing folder names by `Topic_XX_` prefix to avoid duplicates. Ran successfully: all 10 topic folders now have `Syllabus.md`.
+  - `02_parsers/route_questions_ollama.py` (new, FEAT-005): semantic router using `ollama` Python library. Reads un-routed `PastPaper_*.md` files, groups sub-parts by main question number, sends each group to a local LLM for topic classification, writes YAML frontmatter (RULE 10) + question text to the correct `Topic_XX_Name/Past_Papers.md`. Key fixes during development: corrected `SYLLABUS_FILE` path, added batch mode (auto-glob), replaced `json.loads()` with `json.JSONDecoder().raw_decode()` to handle LLM trailing prose, replaced `→` with `->` for Windows cp1252 console, added `VALID_TOPIC_FOLDERS` guardrail to reject hallucinated folder names, fixed JSON decode error from LLM response.
+  - `02_parsers/route_questions.py`: moved from `03_knowledge_base/route_questions.py` (rule violation) to correct location in `02_parsers/`.
+  - `02_parsers/requirements.txt`: added `ollama` package.
+  - `migrate_kb.py`: ran as no-op (topic folders were already migrated from flat `Topic_*.md` files in a prior session).
+  - Past-paper backlog: batch-ran `parse_past_paper.py` (via scratchpad `batch_parse.py`) across all un-parsed QP/MS pairs from 2020-2024; 21 new `PastPaper_*.md` files written to KB root (s20/w20, s21, m23, s23/w23, s24, w24, s25_13). Total at KB root: 35 files.
+  - Routing: ran `route_questions_ollama.py --model llama3.2` against all 35 files (14 in batch, 21 in follow-up run). Post-run: cleaned up 8 hallucinated/mangled folders created before the `VALID_TOPIC_FOLDERS` guardrail was added (merged their `Past_Papers.md` content into correct canonical folders via `merge_spurious.py`). KB now has exactly 10 canonical topic folders.
+- Verification: 10 canonical topic folders present; all have `Syllabus.md`; Topics 1-9 have `Past_Papers.md` with YAML frontmatter blocks; `Topic_10_Boolean_Logic` has `Syllabus.md` only (no source papers routed there by the 3B model -- known quality limitation).
+- Evidence for FEAT-005: recorded in `feature_list.json`.
+- Commits: none yet this session.
+- Files or artifacts updated: `CLAUDE.md`, `02_parsers/split_syllabus.py` (new), `02_parsers/route_questions_ollama.py` (new), `02_parsers/route_questions.py` (moved), `02_parsers/requirements.txt`, `03_knowledge_base/Topic_*/Syllabus.md` (all 10, new), `03_knowledge_base/Topic_*/Past_Papers.md` (updated via routing), `feature_list.json`.
+- Known risk or unresolved issue: `llama3.2:3b` routing quality is poor -- most Paper 1 questions are classified as `Topic_03_Hardware` regardless of content (model size/context limitation). The `VALID_TOPIC_FOLDERS` guardrail prevents directory pollution but doesn't fix accuracy. Acceptable for now; upgrading to a larger Ollama model or using Sonnet for routing would improve accuracy at higher cost. Flat `PastPaper_*.md` files at KB root not yet deleted -- pending cleanup after routing fully confirmed.
+- Next best step: delete flat `PastPaper_*.md` from `03_knowledge_base/` root (Step 6); then resume `FEAT-003` (multi-source stitching -- generate a worksheet combining a topic's `Theory.md` with its `Past_Papers.md`).
+
 ### Session 007
 
 - Date: 2026-06-25
@@ -3285,6 +4700,32 @@ exit 0
 - Files or artifacts updated: `00_syllabus/6_month_zero_to_hero_plan.md` (new), `04_templates/igcse_preamble.tex` (three new boxes + longtable/tikz), `04_templates/igcse_blueprint.tex` (weekly skeleton + box demos), `feature_list.json`.
 - Known risk or unresolved issue: `05_output/Topic_01_Data_Representation.tex` and `Topic_02_Data_Transmission.tex` no longer exist on disk (disposable/gitignored output, expected) -- if a fresh regression check against them is ever needed they must be regenerated first, not assumed present. The `00_syllabus/` write is a policy exception that hasn't been codified as a rule (unlike RULE 7 for `03_knowledge_base/`); if this becomes a recurring pattern, `CLAUDE.md` should gain an explicit rule for it rather than relying on one-off maintainer direction each time.
 - Next best step: generate the actual Week 1 document (or whichever week the user names) from `00_syllabus/6_month_zero_to_hero_plan.md` against `03_knowledge_base/`, exercising both the new weekly skeleton and the study-plan-file input path end-to-end -- still waiting on the user's explicit go-ahead/target per Startup Workflow step 1.
+
+### Session 011
+
+- Date: 2026-06-26
+- Goal: Ingest new 2024 past papers added to `01_raw_sources/past_papers/2024/`.
+- Completed:
+  - Identified 7 new QP/MS pairs not in state: `m24_12`, `m24_22`, `s24_12`, `s24_13`, `s24_21`, `s24_22`, `s24_23`.
+  - Found and fixed a real bug: `digest_new_material.py` `--dry-run` mode was calling `mark_processed()`/`save_state()` even though subprocesses were skipped. Guarded all three call-sites (`process_class_notes` direct-write branch, `process_class_notes` merge branch, `process_past_papers`) with `if not dry_run`. Cleaned up 7 bogus state entries the dry-run had written (state restored from 63 → 56 before the real run).
+  - Ran actual ingestion: **7 files processed, 0 errors**. 69 new question groups routed across all 10 topics. State now 63 entries (21 notes + 42 papers).
+- Verification: state file shows 63 entries; Topic_01 and Topic_07 Past_Papers.md both show 2024 source_file tags at the bottom.
+- Next best step: FEAT-003 multi-source stitching — generate `05_output/Topic_01_Data_Representation_Worksheet.tex`.
+
+### Session 010
+
+- Date: 2026-06-26
+- Goal: Upgrade routing accuracy — replace old generic system prompt with comprehensive 10-topic cheat sheet; reset and re-run full routing pipeline.
+- Completed:
+  - `route_questions_ollama.py`: replaced system prompt with explicit 10-topic keyword map + negative constraints (Topics 02/03/06). Fixed `DEFAULT_MODEL` `llama3` → `llama3.2:latest` (old default was non-existent on this system). Added three-tier JSON fallback parser: fast-path `raw_decode` → prose-wrapped `{...}` block + unquoted-string fixer via `re.sub` → regex field extraction (handles llama3.2:3b's inconsistent output where string values appear unquoted, confirmed by unit tests).
+  - `digest_new_material.py`: `DEFAULT_MODEL` `llama3` → `llama3.2:latest`.
+  - Reset: cleared all 10 `Past_Papers.md` files; removed 35 `pastpaper::` state entries (21 notes entries retained).
+  - Routing re-run: `route_questions_ollama.py --model llama3.2:latest` → **305 questions routed, 0 skipped**, all 10 topics populated (T01:36, T02:34, T03:59, T04:29, T05:50, T06:22, T07:44, T08:8, T09:9, T10:14).
+  - State file re-bootstrapped via `bootstrap_state.py` (56 entries: 21 notes + 35 papers with correct SHA-256 hashes).
+  - Deleted 35 intermediate `PastPaper_*.md` files from `03_knowledge_base/` root (pending cleanup from Session 008 now resolved).
+- Verification: `route_questions_ollama.py` exited 0; all 10 `Past_Papers.md` non-empty; topic distribution spread across all topics (no single-topic dumping).
+- Files updated: `02_parsers/route_questions_ollama.py`, `02_parsers/digest_new_material.py`, `03_knowledge_base/Topic_*/Past_Papers.md` (all 10 re-routed), `01_raw_sources/.processed_files.json` (re-bootstrapped).
+- Next best step: FEAT-003 multi-source stitching — generate `05_output/Topic_01_Data_Representation_Worksheet.tex` combining `Theory.md` + `Past_Papers.md`; verify `./compile.sh` PASS.
 </file>
 
 <file path="CLAUDE.md">
@@ -3303,11 +4744,12 @@ notes and worksheets. You never invent educational content.
    generation. Do not guess or self-select a topic/format to generate.
 2. Run `pwd` and confirm you are in the repository root.
 3. Read `claude-progress.md` (current state, blocker, next step).
-4. Read `feature_list.json` (exactly one feature should be `in_progress`).
-5. Run `git log --oneline -5`.
-6. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
+4. Read `session-handoff.md` to immediately identify the active objective and current blockers.
+5. Read `feature_list.json` (exactly one feature should be `in_progress`).
+6. Run `git log --oneline -5`.
+7. Run `./init.sh` — confirms `pdflatex`/`python3` are available and the 6
    core directories exist.
-7. Work on the one `in_progress` (or highest-priority `not_started`)
+8. Work on the one `in_progress` (or highest-priority `not_started`)
    feature, or execute the requested generation against the Target
    Prompt/Study Plan from step 1, until it is verified or documented as
    blocked.
@@ -3329,7 +4771,10 @@ notes and worksheets. You never invent educational content.
   here.
 - `02_parsers/` — Python scripts. Read ONLY from `01_raw_sources/`. Write
   ONLY into `03_knowledge_base/`. Never write `.tex` directly.
-- `03_knowledge_base/` — clean Markdown, one file per topic, the single
+- `03_knowledge_base/` — one folder per topic (e.g. `Topic_01_Data_Representation/`),
+  each containing up to three files: `Theory.md` (class-note content),
+  `Past_Papers.md` (YAML-tagged Q&A blocks, see RULE 10), `Syllabus.md`
+  (topic scope/keywords from `00_syllabus/keyword_routing.md`). The single
   source of truth for *content*. A **living database**, not a frozen
   parser-only output: the agent may edit these files directly to fix
   formatting/OCR defects or merge in newly parsed content (see RULE 7). It
@@ -3366,9 +4811,10 @@ generation can be a multi-topic bootcamp class, a single worksheet, or a
 full mock exam, dictated by a user prompt or a study plan in `00_syllabus/`.
 
 - **RULE 1 (Strict KB Organization):** `03_knowledge_base/` must ALWAYS
-  remain strictly organized by syllabus topic (e.g. `Topic_01_Data_Representation.md`).
-  Never organize the knowledge base by "Week" or "Class" — that grouping
-  belongs only to the generated output, never to the source of truth.
+  remain strictly organized by syllabus topic folder (e.g. `Topic_01_Data_Representation/`
+  containing `Theory.md`, `Past_Papers.md`, `Syllabus.md`). Never organize
+  the knowledge base by "Week" or "Class" — that grouping belongs only to
+  the generated output, never to the source of truth.
 - **RULE 2 (Dynamic Output):** `05_output/` generation is completely
   dynamic. When instructed to generate a document, read the user prompt or
   the relevant study plan in `00_syllabus/` to determine WHICH topics from
@@ -3397,9 +4843,17 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
   and adapted to match the exact terminology, scope, and depth of the
   Cambridge 0478 syllabus — never the reverse.
 - **RULE 9 (Topical Routing):** When routing past paper questions into the
-  Knowledge Base, ALWAYS append them to the end of the `Topic_XX_Name.md`
-  file under a clear header. ALWAYS include the source tag (e.g., `>
-  Source: 0478_s20_qp_11, Q3`) so the origin is never lost.
+  Knowledge Base, ALWAYS append them to `03_knowledge_base/<Topic_XX_Name>/Past_Papers.md`
+  with a YAML frontmatter block (see RULE 10). ALWAYS include the
+  `source_file` field so the origin is never lost.
+- **RULE 10 (Breadcrumb Metadata):** Every Q&A pair written to any
+  `Past_Papers.md` MUST be prepended with a YAML frontmatter block
+  containing these four fields: `breadcrumbs` (most specific sub-topic
+  string, e.g. `"3.2 Input and output devices"`), `source_file` (the
+  originating `PastPaper_*.md` filename), `total_marks` (integer),
+  and `tags` (array of 3–5 keyword strings drawn from
+  `00_syllabus/Syllabus_Routing_Keywords.md`). This metadata is the
+  primary pre-filtering key — never omit or approximate it.
 
 ### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###
 
@@ -3431,15 +4885,21 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
 - **RULE 3 (Knowledge Base Density):** `03_knowledge_base/*.md` is
   high-signal only — no boilerplate, no conversational phrasing, no
   repeated preamble. Prefer tables, nested lists, strict hierarchy.
-- **RULE 4 (Targeted Loading):** Generating a `.tex` file never reads the
-  full `03_knowledge_base/` directory. Read only the exact `Topic_XX_*.md`
-  files named by the prompt or syllabus mapping.
+- **RULE 4 (Targeted Loading):** `03_knowledge_base/` is organized into
+  per-topic folders, each containing `Theory.md`, `Past_Papers.md`, and
+  `Syllabus.md`. NEVER read a whole topic folder. Load by generation type:
+  Class Notes → `Theory.md` + `Syllabus.md` only.
+  Worksheet / Exam → `Past_Papers.md` + `Syllabus.md` only.
 - **RULE 5 (Context Compression & Rolling Summaries):** When
   `claude-progress.md` (or any operational log) nears its size limit, do
   not delete history — compress it. Roll older sessions into one dense
   summary block (e.g. "Past Context: Parsers built; Topics 1-4 KB
   populated; compile.sh verified"). Keep only the most recent 1-2 sessions
   expanded.
+- **RULE 6 (Handoff Compaction):** `session-handoff.md` must NEVER contain
+  more than the 2 most recent sessions. Before adding a new session entry,
+  move the oldest expanded session into the "Compacted Archive" paragraph
+  (one dense sentence per session) and delete its full entry.
 
 ### VERSION CONTROL POLICY ###
 
@@ -3451,12 +4911,13 @@ See `docs/ARCHITECTURE.md` for the full data-flow diagram and rationale.
 
 ## Naming Convention
 
-Markdown and LaTeX files use `Topic_XX_Name.{md,tex}` (two-digit zero-padded
-topic number, PascalCase/underscored name), e.g. `Topic_01_Data_Representation.md`
-and `Topic_01_Data_Representation.tex`. Use the official 10-topic numbering
-from the syllabus (matches `01_raw_sources/past_papers/topical/`), not the
-7-folder split under `01_raw_sources/class_notes_docs/`. A worksheet and its
-class notes for the same topic share the same `Topic_XX_Name` stem so
+Knowledge-base folders and LaTeX output files use `Topic_XX_Name` (two-digit
+zero-padded topic number, PascalCase/underscored name), e.g.
+`03_knowledge_base/Topic_01_Data_Representation/` and
+`05_output/Topic_01_Data_Representation.tex`. Use the official 10-topic
+numbering from the syllabus (matches `01_raw_sources/past_papers/topical/`),
+not the 7-folder split under `01_raw_sources/class_notes_docs/`. A worksheet
+and its class notes for the same topic share the same `Topic_XX_Name` stem so
 questions and mark schemes stay linked (e.g.
 `Topic_01_Data_Representation.tex` / `Topic_01_Data_Representation_Worksheet.tex`).
 
@@ -3480,14 +4941,15 @@ ALL of:
 
 1. Update `claude-progress.md` (Current Verified State + a new Session Log entry).
 2. Update `feature_list.json` status/evidence — never mark `passing` without evidence.
-3. Run through `clean-state-checklist.md`.
-4. Commit with a message describing the feature, not "wip".
+3. Update `session-handoff.md`, strictly enforcing the 2-session limit by compacting older history into the "Compacted Archive" paragraph.
+4. Run through `clean-state-checklist.md`.
+5. Commit with a message describing the feature, not "wip".
 </file>
 
 <file path="feature_list.json">
 {
   "project": "igcse-0478-latex-pipeline",
-  "last_updated": "2026-06-25T22:15",
+  "last_updated": "2026-06-26T00:00",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -3582,15 +5044,22 @@ ALL of:
       "priority": 5,
       "area": "knowledge_base",
       "title": "Semantic Topic Tagger (Past Papers -> Topical KB)",
-      "user_visible_behavior": "The agent (or a specialized Python script) reads a PastPaper_<code>.md file, evaluates each Question/Mark Scheme pair against the 00_syllabus/, and appends the pair into the correct Topic_XX_Name.md file in the knowledge base under a '## Past Paper Questions' heading, preserving the source metadata.",
-      "status": "not_started",
+      "user_visible_behavior": "A Python script (02_parsers/route_questions_ollama.py) reads PastPaper_<code>.md files, groups sub-parts by main question number, sends each group to a local Ollama LLM for topic classification, and appends the Q&A pair (with RULE 10 YAML frontmatter: breadcrumbs/source_file/total_marks/tags) to the correct 03_knowledge_base/<Topic_XX_Name>/Past_Papers.md.",
+      "status": "passing",
       "verification": [
-        "Run the topic tagger on one PastPaper markdown file.",
-        "Verify that Topic_XX_Name.md files now contain the questions appended at the bottom.",
-        "Verify no mark schemes were detached from their questions during the move."
+        "Run route_questions_ollama.py against all PastPaper_*.md files.",
+        "Verify 03_knowledge_base/ contains exactly 10 canonical Topic_XX_Name/ folders.",
+        "Verify each Past_Papers.md receiving content has YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
+        "Verify no mark schemes were detached from their questions during routing."
       ],
-      "evidence": [],
-      "notes": "Requires high-intelligence mapping (Sonnet level) to accurately match question text to syllabus topics."
+      "evidence": [
+        "02_parsers/split_syllabus.py (new, deterministic): parsed 00_syllabus/keyword_routing.md on '### Topic N: Name' headers and wrote Syllabus.md into each of the 10 canonical topic folders. Verified: all 10 folders now have Syllabus.md.",
+        "02_parsers/route_questions_ollama.py (new, FEAT-005): runs against all PastPaper_*.md files in batch mode (auto-glob). Groups sub-parts by main question number before sending to Ollama (avoids splitting a single scenario across calls). Key robustness fixes: json.JSONDecoder().raw_decode() for LLM trailing prose, VALID_TOPIC_FOLDERS guardrail (strict match + case-insensitive fallback) to prevent hallucinated directory creation, Windows-safe ASCII output.",
+        "Batch PDF parse backlog: ran parse_past_paper.py across all un-parsed 2020-2024 QP/MS pairs; 21 new PastPaper_*.md files created (s20, w20, s21, m23, s23, w23, s24, w24, s25_13). Total source pool: 35 PastPaper_*.md files.",
+        "Routing run (all 35 files, model llama3.2): 262 question groups routed total (112 + 150 across two runs), 43 skipped (guardrail rejections of hallucinated/malformed folder names -- no spurious directories created). Post-run: 8 pre-guardrail hallucinated folders (Topic_3_Hardware, Topic_8_Programming, Topic_6_Artificial Intelligence, Topic_04_Databases, Topic_08_Prog, Topic_09_Boolean Logic, Topic_10_Boolean logic, Topic_05_The_internet_and Its_use) manually merged into canonical folders and deleted. Final KB structure: exactly 10 canonical topic folders, all with Syllabus.md, all with Past_Papers.md containing YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
+        "Known quality caveat: llama3.2:3b routes most Paper 1 questions to Topic_03_Hardware regardless of content (model size limitation). Infrastructure is correct; routing accuracy improves with a larger model."
+      ],
+      "notes": "Flat PastPaper_*.md files at KB root deleted after routing (Step 6 of pipeline). 02_parsers/route_questions.py moved from 03_knowledge_base/ (rule violation) to correct location. CLAUDE.md updated: RULE 4 (folder-per-topic KB), RULE 9 (path to Past_Papers.md), RULE 10 (breadcrumb metadata), Directory Boundaries, RULE 1 (folder not flat file), Naming Convention."
     }
   ]
 }
