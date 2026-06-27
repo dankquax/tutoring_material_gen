@@ -144,6 +144,15 @@ def split_into_chunks(text: str, is_ms: bool = False, debug: bool = False) -> di
                 if len(cells) >= 2 and not re.match(r"^[-:]+$", cells[0]):
                     q_val_clean = cells[0].replace(" ", "")
                     if re.match(r"^\d+(?:\([a-z]+\))?(?:\([ivx]+\))?$", q_val_clean):
+                        # Guard: purely numeric labels must be 1–15 and not zero-padded.
+                        # Zero-padded values (01, 10, 20…) are pseudocode line numbers.
+                        pure_num = re.match(r"^(\d+)$", q_val_clean)
+                        if pure_num:
+                            n = int(pure_num.group(1))
+                            if q_val_clean[0] == "0" or not (1 <= n <= 15):
+                                # Pseudocode line number — treat as content, not a label
+                                current_lines.append(stripped)
+                                continue
                         flush()
                         current_label = q_val_clean
                         current_lines = [cells[1].strip()]

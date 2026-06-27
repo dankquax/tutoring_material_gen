@@ -55,7 +55,9 @@ TOPIC_ANCHORS: dict[str, str] = {
         "RAM, ROM, cache. Secondary storage devices: magnetic (hard disk), optical (CD, DVD, "
         "Blu-ray), solid-state (SSD, flash). Input devices: keyboard, mouse, microphone, "
         "scanner, camera. Output devices: monitor, printer, speaker, actuator. "
-        "Does NOT include binary number conversion or binary arithmetic questions."
+        "Does NOT include binary number conversion or binary arithmetic questions. "
+        "Does NOT include data transmission modes (serial, parallel, simplex, half-duplex, "
+        "full-duplex) — those are Topic 02."
     ),
     "Topic_04_Software": (
         "System software vs application software. Operating system functions: memory management, "
@@ -65,12 +67,12 @@ TOPIC_ANCHORS: dict[str, str] = {
         "stops on error), assembler. Software utilities, open-source vs proprietary licensing."
     ),
     "Topic_05_The_Internet_and_Its_Uses": (
-        "Internet and World Wide Web: URLs, HTTP, HTTPS, HTML, DNS resolution, IP addresses, "
-        "MAC addresses, web hosting, cookies, e-commerce. Cybersecurity threats: phishing, "
-        "pharming, malware (virus, worm, trojan horse, spyware, ransomware), brute-force attack, "
-        "SQL injection, DDoS. Countermeasures: firewall, proxy server, antivirus software, "
-        "two-factor authentication, biometrics, SSL/TLS encryption. Digital currency, "
-        "online banking security, data privacy legislation."
+        "Internet and World Wide Web: URL, web address, website parts (domain, path, protocol), "
+        "HTTP, HTTPS, HTML, DNS resolution, IP addresses, MAC addresses, web hosting, cookies, "
+        "e-commerce. Cybersecurity threats: phishing, pharming, malware (virus, worm, trojan horse, "
+        "spyware, ransomware), brute-force attack, SQL injection, DDoS. Countermeasures: firewall, "
+        "proxy server, antivirus software, two-factor authentication, biometrics, SSL/TLS encryption. "
+        "Digital currency, online banking security, data privacy legislation."
     ),
     "Topic_06_Automated_and_Emerging_Technologies": (
         "Automated systems: sensors, microprocessors, actuators, real-time feedback control loops. "
@@ -102,7 +104,8 @@ TOPIC_ANCHORS: dict[str, str] = {
         "AND/OR, ORDER BY, GROUP BY, COUNT, SUM, INNER JOIN, linking tables by key fields. "
         "Database design: entity-relationship diagrams, normalisation. "
         "A database TABLE is a persistent store of records — NOT an algorithm trace table "
-        "or a pseudocode array. Does NOT include Boolean logic or truth tables for gates."
+        "or a pseudocode array. Does NOT include Boolean logic or truth tables for gates. "
+        "Does NOT include URLs, web addresses, or website structure — those are Topic 05."
     ),
     "Topic_10_Boolean_Logic": (
         "Boolean logic gates and their truth tables: AND gate, OR gate, NOT gate (inverter), "
@@ -156,65 +159,71 @@ def route_topic(chunk_text: str, anchor_embeddings: dict[str, np.ndarray], embed
 
 
 # ---------------------------------------------------------------------------
-# LLM metadata extraction
+# Python-driven YAML construction (Phase 3 hardening)
 # ---------------------------------------------------------------------------
 
-_YAML_SYSTEM = """\
-You are a metadata extractor for IGCSE Computer Science (0478) past paper questions.
-Given a Q&A chunk, output ONLY a YAML block with these exact four fields and nothing else:
+# Hardcoded breadcrumbs per topic — Python dictates, LLM never touches these.
+TOPIC_BREADCRUMBS: dict[str, str] = {
+    "Topic_01_Data_Representation":              "Topic 01: Data Representation",
+    "Topic_02_Data_Transmission":                "Topic 02: Data Transmission",
+    "Topic_03_Hardware":                         "Topic 03: Hardware",
+    "Topic_04_Software":                         "Topic 04: Software",
+    "Topic_05_The_Internet_and_Its_Uses":        "Topic 05: The Internet and Its Uses",
+    "Topic_06_Automated_and_Emerging_Technologies": "Topic 06: Automated and Emerging Technologies",
+    "Topic_07_Algorithm_design_and_problem_solving": "Topic 07: Algorithm Design and Problem Solving",
+    "Topic_08_Programming":                      "Topic 08: Programming",
+    "Topic_09_Databases":                        "Topic 09: Databases",
+    "Topic_10_Boolean_Logic":                    "Topic 10: Boolean Logic",
+}
 
-breadcrumbs: "<most specific Cambridge 0478 sub-topic, e.g. '3.2 Input and output devices'>"
-source_file: "<paper code passed in the user message>"
-total_marks: <integer — sum of all marks from [N] or [N marks] markers in the chunk>
-tags:
-  - "<keyword 1 from Cambridge 0478 vocabulary>"
-  - "<keyword 2>"
-  - "<keyword 3>"
-
-Rules:
-- breadcrumbs must be the exact Cambridge 0478 sub-topic string (e.g. "1.3 Two's complement").
-- total_marks: parse all [N] or [N marks] tokens; sum them to an integer.
-- tags: 3–5 keyword strings drawn strictly from the syllabus vocabulary.
-- Output ONLY the YAML block. No preamble, no explanation, no code fences.
-"""
+# Regex to extract mark values from [N] or [N marks] / [N mark] tokens.
+_MARKS_RE = re.compile(r'\[(\d+)\s*(?:marks?)?\]', re.IGNORECASE)
 
 
-def extract_yaml_metadata(chunk_text: str, source_file: str, llm_model: str) -> str:
-    """Call local LLM to extract YAML frontmatter. Returns a raw YAML string."""
-    prompt = f"source_file: {source_file}\n\n{chunk_text}"
+def extract_total_marks(text: str) -> int:
+    """Sum all [N] / [N marks] markers in the Q&A text. Pure Python, no LLM."""
+    return sum(int(m) for m in _MARKS_RE.findall(text))
+
+
+def extract_tags_from_llm(chunk_text: str, llm_model: str) -> list[str]:
+    """Ask the LLM for 3–5 comma-separated keywords only. Returns a clean list."""
+    prompt = (
+        "Read this computer science question. "
+        "Output ONLY a single comma-separated list of 3 to 5 keywords. "
+        "Do not use markdown. Do not write sentences."
+    )
     try:
         resp = ollama.chat(
             model=llm_model,
-            messages=[
-                {"role": "system", "content": _YAML_SYSTEM},
-                {"role": "user",   "content": prompt},
-            ],
+            messages=[{"role": "user", "content": f"{prompt}\n\n{chunk_text}"}],
         )
         raw = resp["message"]["content"].strip()
-        # Strip any accidental fenced code block wrappers (yaml, yml, or bare ```)
-        raw = re.sub(r"^```(?:ya?ml)?\s*", "", raw, flags=re.IGNORECASE)
-        raw = re.sub(r"\s*```$", "",             raw, flags=re.IGNORECASE)
-        # Strip stray language-tag lines left when LLM uses ```yml fences
-        raw = re.sub(r"(?m)^ya?ml\s*\n?", "", raw)
-        raw = raw.strip()
-        # RULE 10: guarantee source_file is always present
-        if "source_file:" not in raw:
-            # Insert after breadcrumbs line (first line) if present, else prepend
-            lines = raw.splitlines()
-            if lines:
-                raw = lines[0] + f'\nsource_file: "{source_file}"\n' + "\n".join(lines[1:])
-            else:
-                raw = f'source_file: "{source_file}"'
-        return raw
+        tags = [t.strip().strip("\"'") for t in raw.split(",") if t.strip()]
+        tags = [t for t in tags if t][:5]   # cap at 5
+        if len(tags) < 3:
+            tags += ["computer science"] * (3 - len(tags))
+        return tags
     except Exception as exc:
-        print(f"  WARN: LLM metadata call failed ({exc}); using stub.", file=sys.stderr)
-        return (
-            f'breadcrumbs: "Unknown"\n'
-            f'source_file: "{source_file}"\n'
-            f"total_marks: 0\n"
-            f"tags:\n"
-            f'  - "{source_file}"'
-        )
+        print(f"  WARN: LLM tags call failed ({exc}); using stub.", file=sys.stderr)
+        return ["computer science", "IGCSE", "0478"]
+
+
+def build_yaml_metadata(
+    topic_folder: str,
+    source_file: str,
+    total_marks: int,
+    tags: list[str],
+) -> str:
+    """Construct RULE 10-compliant YAML using an f-string. No LLM involved."""
+    breadcrumbs = TOPIC_BREADCRUMBS.get(topic_folder, topic_folder)
+    tags_yaml = "\n".join(f'  - "{t}"' for t in tags)
+    return (
+        f'breadcrumbs: "{breadcrumbs}"\n'
+        f'source_file: "{source_file}"\n'
+        f'total_marks: {total_marks}\n'
+        f'tags:\n'
+        f'{tags_yaml}'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +344,10 @@ def process_linked_json(
         topic_folder = route_topic(embed_text, anchor_embeddings, embed_model)
         print(f"  {label} -> {topic_folder}")
 
-        # Step 2 — LLM metadata only (uses canonical chunk_text, not enriched)
-        yaml_meta = extract_yaml_metadata(chunk_text, source_file, llm_model)
+        # Step 2 — Python extracts marks + breadcrumbs; LLM supplies keywords only.
+        total_marks = extract_total_marks(chunk_text)
+        tags        = extract_tags_from_llm(chunk_text, llm_model)
+        yaml_meta   = build_yaml_metadata(topic_folder, source_file, total_marks, tags)
 
         # Step 3 — append to KB
         append_to_past_papers(topic_folder, yaml_meta, pair)
