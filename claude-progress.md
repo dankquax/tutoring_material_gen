@@ -5,13 +5,14 @@
 - Repository root: `_project/` (this repo)
 - Standard startup path: `./init.sh`
 - Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
-- Active feature: `FEAT-006` (Docling Universal Extraction Engine) — `in_progress` (evidence still unrecorded). FEAT-007 `passing`. FEAT-008 `passing`. FEAT-001–005 `passing`. FEAT-003 (multi-source stitching) deferred.
+- Active feature: `FEAT-006` (Docling Universal Extraction Engine) — `in_progress` (evidence still unrecorded). FEAT-007 `passing`. FEAT-008 `passing`. FEAT-001–005 `passing`. FEAT-003 single-topic generation re-verified 2026-06-29 for Topic_01, Topic_02, and Topic_04 (all 6 environments used in each); multi-source stitching still pending.
 - Pipeline: Docling extraction → regex linker → cosine routing + Python YAML construction. Scripts: `extract_docling.py`, `link_qa.py`, `route_hybrid.py`.
 - KB structure: 10 canonical `Topic_XX_Name/` folders; `_staging/` holds 15 `*_linked.json` (w25 + 2024 papers); all w25 and 2024 papers routed.
 - KB quality: CLEAN as of 2026-06-27 (stabilization pass) — 0 missing `source_file`, 0 hallucinated YAML fields. 998 total RULE 10-compliant pairs across 10 topics (706 pre-2024 + 293 fresh 2024).
 - Router: `route_hybrid.py` hardened — Topic 05 explicitly claims URL/web-address, Topic 09 rejects URLs, Topic 03 rejects data-transmission modes. LLM now supplies KEYWORDS ONLY; Python constructs all YAML (breadcrumbs hardcoded per topic, marks via regex on `[N]` tokens, tags split from comma list).
 - Linker: `link_qa.py` hardened — MS table purely-numeric labels now rejected if zero-padded or >15 (kills pseudocode line-number bleed).
 - Current blocker: FEAT-006 evidence unrecorded (needs a real `extract_docling.py --file` run against a QP PDF).
+- tcolorbox title constraint (discovered 2026-06-29): commas and bare parentheses in custom tcolorbox environment titles are pgfkeys separators — never use them. Use em-dash or rephrasing instead.
 
 ## Session Log
 
@@ -64,3 +65,38 @@
   - **Phase 3 — Preamble Context Injection:** Added `_build_embed_text()` helper and `_parent_label()` to `route_hybrid.py`. When a sub-question's text is <60 chars, the function walks up the label hierarchy (e.g., `1(c)` → `1`) to find the first ancestor with ≥60 chars of context, prepends it in-memory only for cosine routing. The canonical KB chunk is still the raw pair text — no preamble written to KB.
   - **LLM fence fix:** Extended `extract_yaml_metadata` regex to also strip `yml` (not just `yaml`) from fenced code block artifacts.
 - Files updated: `02_parsers/route_hybrid.py`, `claude-progress.md`, `session-handoff.md`; `util_kb_surgery.py` created and deleted.
+
+### Session 017
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 01 using the new KB (Theory.md + Syllabus.md; Past_Papers.md consulted for exam-tip/mark-scheme patterns).
+- Completed:
+  - Wrote `05_output/Topic_01_Data_Representation.tex` from scratch. Covers all of syllabus 1.1/1.2/1.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×4 (why-binary, overflow 2-mark structure, MSB/LSB reversal, Unicode variable-length), `stratbox` ×3 (show working, ASCII/Unicode compare structure, drawback chain), `errortrap` ×3 (carry row in binary addition, lost 1-bit in shifts, 1024 vs 1000), `scenario` ×6 (conversion worked examples, binary addition, two's complement, image/sound file size, RLE), `modelans` ×1 (two's complement mark scheme).
+  - Root cause discovered: commas and bare parentheses in `\newtcolorbox` optional titles are pgfkeys key-value separators and cause compile errors. Fix: avoid both in all custom tcolorbox titles.
+  - `./compile.sh Topic_01_Data_Representation.tex` → **PASS, exit 0**.
+  - Updated `feature_list.json` with Session 017 evidence.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 final gap: generate a Topic_01 or Topic_02 worksheet (multi-source stitch — Past_Papers.md questions + mark scheme into worksheet+mark-scheme .tex).
+
+### Session 019
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 04 (Software).
+- Completed:
+  - Wrote `05_output/Topic_04_Software.tex` from scratch. Covers all of syllabus 4.1/4.2 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×3 (system vs application exam phrasing, firmware vs OS conflation, assembly language memory-efficiency misconception), `stratbox` ×4 (OS function mnemonic, high-level language benefits, IDE three-mark recall, using both translators), `errortrap` ×1 (interrupt priority and stack), `scenario` ×2 (managing memory mark scheme, interpreter-during-development mark scheme), `modelans` ×1 (interrupt handling 5-mark response).
+  - Two TikZ diagrams: stacked software hierarchy rectangles and interrupt handling cycle flow.
+  - `./compile.sh Topic_04_Software.tex` → **PASS, exit 0** on first attempt.
+  - Updated `feature_list.json` with Session 019 evidence.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: worksheet from Past_Papers.md.
+
+### Session 018
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 02 (Data Transmission).
+- Completed:
+  - Wrote `05_output/Topic_02_Data_Transmission.tex` from scratch. Covers all of syllabus 2.1/2.2/2.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `stratbox` ×4 (packet-structure tip, serial-vs-parallel decision guide, parity-block advantage, symmetric/asymmetric comparison table), `critbox` ×5 (simplex printer limitation, parity limitations, echo check drawback, check digit vs checksum, payload not in header), `errortrap` ×1 (corruption definition), `scenario` ×3 (packet-switching diagram annotation, theatre serial-simplex choice, HTTPS asymmetric encryption), `modelans` ×1 (parity+ARQ combined mark-scheme reasoning).
+  - `./compile.sh Topic_02_Data_Transmission.tex` → **PASS, exit 0**.
+  - Updated `feature_list.json` and `session-handoff.md`.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: Topic_02 worksheet.

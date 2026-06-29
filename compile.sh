@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Verification script: compiles one .tex file from 05_output/ with pdflatex
-# and reports a clear PASS/FAIL. Usage:
-#   ./compile.sh Topic_01_Data_Representation.tex
-#   ./compile.sh 05_output/Topic_01_Data_Representation.tex
+# and reports a clear PASS/FAIL. Cleans up all compilation artifacts on success.
 
 set -uo pipefail
 
@@ -22,8 +20,6 @@ if [ ! -f "$TEX_PATH" ]; then
   exit 1
 fi
 
-# Fresh TinyTeX installs land here on Windows; fall back to it if a
-# shell restart hasn't picked up the PATH update yet (see init.sh).
 TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
 if [ -d "$TINYTEX_BIN" ]; then
   PATH="$PATH:$TINYTEX_BIN"
@@ -34,18 +30,24 @@ if ! command -v pdflatex >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Compiling $TEX_BASENAME inside $OUTPUT_DIR"
+echo "==> Verifying LaTeX syntax for $TEX_BASENAME..."
 cd "$OUTPUT_DIR"
 
-LOG_NAME="${TEX_BASENAME%.tex}.log"
+BASE_NAME="${TEX_BASENAME%.tex}"
+LOG_NAME="$BASE_NAME.log"
+STDOUT_NAME="$LOG_NAME.stdout"
 
-if pdflatex -interaction=nonstopmode -halt-on-error "$TEX_BASENAME" > "$LOG_NAME.stdout" 2>&1; then
-  echo "PASS: ${TEX_BASENAME%.tex}.pdf compiled with zero errors."
-  echo "      Log: $OUTPUT_DIR/$LOG_NAME"
+# Run compilation pass quietly
+if pdflatex -interaction=nonstopmode -halt-on-error "$TEX_BASENAME" > "$STDOUT_NAME" 2>&1; then
+  echo "PASS: Syntax is perfectly valid."
+  echo "==> Cleaning up verification clutter from 05_output/..."
+  
+  # Automatically vaporize all auxiliary files and the byproduct PDF on success
+  rm -f "$BASE_NAME.aux" "$LOG_NAME" "$BASE_NAME.out" "$BASE_NAME.pdf" "$STDOUT_NAME" "$BASE_NAME.toc" "$BASE_NAME.synctex.gz"
   exit 0
 else
   echo "FAIL: pdflatex reported errors compiling $TEX_BASENAME." >&2
-  echo "      See $OUTPUT_DIR/$LOG_NAME and $OUTPUT_DIR/$LOG_NAME.stdout for details." >&2
+  echo "      Logs preserved for debugging: $OUTPUT_DIR/$LOG_NAME and $STDOUT_NAME" >&2
   grep -m 5 '^!' "$LOG_NAME" >&2 2>/dev/null || true
   exit 1
 fi

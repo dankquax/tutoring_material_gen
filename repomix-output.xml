@@ -44,12 +44,9 @@ The content is organized as follows:
 02_parsers/.gitkeep
 02_parsers/bootstrap_state.py
 02_parsers/digest_new_material.py
-02_parsers/merge_theory_ollama.py
-02_parsers/parse_class_notes.py
-02_parsers/parse_past_paper.py
-02_parsers/requirements.txt
-02_parsers/route_questions_ollama.py
-02_parsers/route_questions.py
+02_parsers/extract_docling.py
+02_parsers/link_qa.py
+02_parsers/route_hybrid.py
 02_parsers/split_syllabus.py
 04_templates/.gitkeep
 04_templates/igcse_blueprint.tex
@@ -64,6 +61,7 @@ evaluator-rubric.md
 feature_list.json
 init.sh
 migrate_kb.py
+requirements.txt
 resources/index.md
 resources/openai-advanced/index.md
 resources/openai-advanced/repo-template/AGENTS.md
@@ -272,1333 +270,117 @@ if __name__ == "__main__":
     main()
 </file>
 
-<file path="02_parsers/digest_new_material.py">
+<file path="02_parsers/extract_docling.py">
 #!/usr/bin/env python3
 """
-digest_new_material.py — Master ingestion orchestrator.
+extract_docling.py — FEAT-006: Docling Universal Extraction Engine.
 
-Scans 01_raw_sources/ for unprocessed files and runs the correct pipeline:
-
-  Class notes (PDF / DOCX)
-    -> parse_class_notes.py  (extracts Markdown to a temp file)
-    -> merge_theory_ollama.py  (LLM-merges into Theory.md)
-
-  Past papers (QP + MS PDF pairs)
-    -> parse_past_paper.py  (links Q+MS into PastPaper_*.md at KB root)
-    -> route_questions_ollama.py  (semantically routes into per-topic Past_Papers.md)
-
-State is tracked in 01_raw_sources/.processed_files.json (SHA-256 keyed).
-Files already in the state file are skipped.
+Scans 01_raw_sources/ for PDF/DOCX documents, extracts layout and tables
+natively via Docling's DocumentConverter, and saves clean Markdown files
+to 03_knowledge_base/_staging/ ready for link_qa.py.
 
 Usage:
-    python digest_new_material.py [--model llama3] [--dry-run]
-
-Notes on file layout assumptions:
-  Class notes: 01_raw_sources/class_notes_docs/<Topic_XX_Name>/<file>.pdf|.docx
-               Parent directory name MUST match Topic_XX_Name (e.g. Topic_01_Data_Representation).
-  Past papers: 01_raw_sources/past_papers/<year>/<code>_qp_<n>.pdf
-                                                  <code>_ms_<n>.pdf
-               QP and MS are paired by matching the paper code (everything before _qp/_ms).
+    python extract_docling.py                        # scan all of 01_raw_sources/
+    python extract_docling.py --file <path>          # single file
+    python extract_docling.py --source-dir <path>    # alternate source root
+    python extract_docling.py --staging-dir <path>   # alternate staging output
 """
 
 import argparse
-import hashlib
-import json
-import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.base_models import InputFormat
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RAW_SOURCES_DIR = REPO_ROOT / "01_raw_sources"
-KB_DIR = REPO_ROOT / "03_knowledge_base"
-PARSERS_DIR = REPO_ROOT / "02_parsers"
-STATE_FILE = RAW_SOURCES_DIR / ".processed_files.json"
+STAGING_DIR = REPO_ROOT / "03_knowledge_base" / "_staging"
 
-# Regex to extract topic number and name from a folder named Topic_XX_Name
-TOPIC_FOLDER_RE = re.compile(r"^Topic_(\d{2})_(.+)$")
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc"}
 
-# QP / MS filename patterns:  <code>_qp_<n>.pdf  /  <code>_ms_<n>.pdf
-QP_RE = re.compile(r"^(.+)_qp_(\d+)\.pdf$", re.IGNORECASE)
-MS_RE = re.compile(r"^(.+)_ms_(\d+)\.pdf$", re.IGNORECASE)
 
-DEFAULT_MODEL = "llama3.2:latest"
-
-
-# ---------------------------------------------------------------------------
-# State helpers
-# ---------------------------------------------------------------------------
-
-def load_state() -> dict:
-    if STATE_FILE.is_file():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-def file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()
-
-
-def mark_processed(state: dict, key: str, note: str) -> None:
-    state[key] = {"status": "processed", "note": note}
-
-
-# ---------------------------------------------------------------------------
-# Subprocess runner
-# ---------------------------------------------------------------------------
-
-def run(cmd: list, dry_run: bool = False) -> bool:
-    """Run a subprocess command. Returns True on success (exit 0)."""
-    display = " ".join(str(c) for c in cmd)
-    if dry_run:
-        print(f"  [DRY-RUN] {display}")
-        return True
-    print(f"  RUN: {display}")
-    result = subprocess.run(cmd, cwd=REPO_ROOT)
-    if result.returncode != 0:
-        print(f"  FAIL (exit {result.returncode}): {display}", file=sys.stderr)
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Class notes pipeline
-# ---------------------------------------------------------------------------
-
-def find_class_notes() -> list[tuple[Path, str, str]]:
-    """
-    Returns list of (file_path, topic_num, topic_name) for all class notes
-    PDFs and DOCXs whose parent directory matches Topic_XX_Name.
-    """
-    notes_dir = RAW_SOURCES_DIR / "class_notes_docs"
-    if not notes_dir.is_dir():
-        return []
-
-    results = []
-    for f in sorted(notes_dir.rglob("*")):
-        if f.suffix.lower() not in (".pdf", ".docx"):
-            continue
-        m = TOPIC_FOLDER_RE.match(f.parent.name)
-        if not m:
-            print(
-                f"  SKIP (class note): {f.relative_to(RAW_SOURCES_DIR)} — "
-                "parent directory name does not match Topic_XX_Name pattern.",
-                file=sys.stderr,
-            )
-            continue
-        results.append((f, m.group(1), m.group(2)))
-    return results
-
-
-def process_class_notes(state: dict, model: str, dry_run: bool) -> tuple[int, int]:
-    """Returns (processed, errors)."""
-    files = find_class_notes()
-    if not files:
-        print("  No class notes found under 01_raw_sources/class_notes_docs/")
-        return 0, 0
-
-    processed, errors = 0, 0
-    for note_path, topic_num, topic_name in files:
-        state_key = f"notes::{note_path.relative_to(RAW_SOURCES_DIR)}"
-        h = file_hash(note_path)
-        state_key_hash = f"{state_key}::{h}"
-
-        if state_key_hash in state:
-            print(f"  SKIP (already processed): {note_path.relative_to(RAW_SOURCES_DIR)}")
-            continue
-
-        print(f"\n[Class notes] {note_path.relative_to(RAW_SOURCES_DIR)}")
-        topic_folder = f"Topic_{topic_num}_{topic_name}"
-
-        # Step 1: parse_class_notes.py -> writes raw markdown to a temp file
-        with tempfile.NamedTemporaryFile(
-            suffix=".md", delete=False, prefix=f"parsed_{topic_folder}_"
-        ) as tmp:
-            tmp_path = Path(tmp.name)
-
-        # parse_class_notes.py normally writes directly to KB, but we need a
-        # temp staging file so merge_theory_ollama.py can receive it.
-        # Strategy: parse to a dedicated staging path in KB, then merge.
-        staging_path = KB_DIR / f"_staging_{topic_folder}.md"
-
-        parse_ok = run(
-            [
-                sys.executable,
-                str(PARSERS_DIR / "parse_class_notes.py"),
-                str(note_path),
-                "--topic", topic_num,
-                "--name", topic_name,
-            ],
-            dry_run=dry_run,
-        )
-
-        if not parse_ok:
-            errors += 1
-            tmp_path.unlink(missing_ok=True)
-            continue
-
-        # parse_class_notes.py wrote to 03_knowledge_base/Topic_XX_Name.md (flat)
-        # or to the per-folder Theory.md depending on which version is installed.
-        # Check both locations for the freshly written content.
-        flat_out = KB_DIR / f"Topic_{topic_num}_{topic_name}.md"
-        theory_out = KB_DIR / topic_folder / "Theory.md"
-
-        if flat_out.is_file() and flat_out.stat().st_size > 0:
-            source_for_merge = flat_out
-        elif theory_out.is_file() and theory_out.stat().st_size > 0:
-            # Already in the right place; merge from a copy so the LLM sees
-            # "new" vs "existing" correctly.  If Theory.md IS the target and
-            # the parse wrote directly into it, skip the merge step.
-            print(
-                f"  INFO: parse_class_notes.py wrote directly to Theory.md — "
-                "skipping merge_theory_ollama (content already integrated)."
-            )
-            if not dry_run:
-                mark_processed(state, state_key_hash, f"parse-only (direct write to {theory_out.relative_to(REPO_ROOT)})")
-                save_state(state)
-            processed += 1
-            tmp_path.unlink(missing_ok=True)
-            continue
-        else:
-            print(
-                f"  FAIL: parse_class_notes.py succeeded but output not found at "
-                f"{flat_out} or {theory_out}",
-                file=sys.stderr,
-            )
-            errors += 1
-            tmp_path.unlink(missing_ok=True)
-            continue
-
-        # Step 2: merge_theory_ollama.py
-        merge_ok = run(
-            [
-                sys.executable,
-                str(PARSERS_DIR / "merge_theory_ollama.py"),
-                str(source_for_merge),
-                topic_folder,
-                "--model", model,
-            ],
-            dry_run=dry_run,
-        )
-
-        # Clean up flat staging file after merge (KB should now hold per-folder Theory.md)
-        if source_for_merge == flat_out and not dry_run:
-            flat_out.unlink(missing_ok=True)
-        tmp_path.unlink(missing_ok=True)
-
-        if not merge_ok:
-            errors += 1
-            continue
-
-        if not dry_run:
-            mark_processed(state, state_key_hash, f"notes pipeline OK (topic {topic_folder})")
-            save_state(state)
-        processed += 1
-
-    return processed, errors
-
-
-# ---------------------------------------------------------------------------
-# Past papers pipeline
-# ---------------------------------------------------------------------------
-
-def find_qp_ms_pairs() -> list[tuple[Path, Path, str]]:
-    """
-    Returns list of (qp_path, ms_path, paper_code) for unmatched QP/MS pairs
-    found anywhere under 01_raw_sources/past_papers/.
-    """
-    papers_dir = RAW_SOURCES_DIR / "past_papers"
-    if not papers_dir.is_dir():
-        return []
-
-    qp_map: dict[str, Path] = {}
-    ms_map: dict[str, Path] = {}
-
-    for f in sorted(papers_dir.rglob("*.pdf")):
-        m_qp = QP_RE.match(f.name)
-        m_ms = MS_RE.match(f.name)
-        if m_qp:
-            code = f"{m_qp.group(1)}__{m_qp.group(2)}"
-            qp_map[code] = f
-        elif m_ms:
-            code = f"{m_ms.group(1)}__{m_ms.group(2)}"
-            ms_map[code] = f
-
-    pairs = []
-    for code, qp_path in qp_map.items():
-        if code in ms_map:
-            # Reconstruct clean paper code from filename stem (e.g. 0478_s20_11)
-            paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp_path.stem, flags=re.IGNORECASE)
-            pairs.append((qp_path, ms_map[code], paper_code))
-        else:
-            print(
-                f"  WARN: QP found with no matching MS — {qp_path.relative_to(RAW_SOURCES_DIR)}",
-                file=sys.stderr,
-            )
-    return pairs
-
-
-def process_past_papers(state: dict, model: str, dry_run: bool) -> tuple[int, int]:
-    """Returns (processed, errors)."""
-    pairs = find_qp_ms_pairs()
-    if not pairs:
-        print("  No QP/MS pairs found under 01_raw_sources/past_papers/")
-        return 0, 0
-
-    processed, errors = 0, 0
-    for qp_path, ms_path, paper_code in pairs:
-        h = hashlib.sha256()
-        h.update(qp_path.read_bytes())
-        h.update(ms_path.read_bytes())
-        state_key = f"pastpaper::{paper_code}::{h.hexdigest()}"
-
-        if state_key in state:
-            print(f"  SKIP (already processed): {paper_code}")
-            continue
-
-        print(f"\n[Past paper] {paper_code}")
-
-        # Step 1: parse_past_paper.py
-        parse_ok = run(
-            [
-                sys.executable,
-                str(PARSERS_DIR / "parse_past_paper.py"),
-                str(qp_path),
-                str(ms_path),
-                "--code", paper_code,
-            ],
-            dry_run=dry_run,
-        )
-        if not parse_ok:
-            errors += 1
-            continue
-
-        # Step 2: route_questions_ollama.py
-        # parse_past_paper.py writes to 03_knowledge_base/PastPaper_<code>.md
-        parsed_file = KB_DIR / f"PastPaper_{paper_code}.md"
-        if not dry_run and not parsed_file.is_file():
-            print(
-                f"  FAIL: expected output {parsed_file.relative_to(REPO_ROOT)} not found.",
-                file=sys.stderr,
-            )
-            errors += 1
-            continue
-
-        route_ok = run(
-            [
-                sys.executable,
-                str(PARSERS_DIR / "route_questions_ollama.py"),
-                str(parsed_file) if not dry_run else str(parsed_file),
-                "--model", model,
-            ],
-            dry_run=dry_run,
-        )
-        if not route_ok:
-            errors += 1
-            continue
-
-        if not dry_run:
-            mark_processed(state, state_key, f"past-paper pipeline OK ({paper_code})")
-            save_state(state)
-        processed += 1
-
-    return processed, errors
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Ollama model for LLM steps (default: {DEFAULT_MODEL})",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print what would be run without executing anything.",
-    )
-    args = parser.parse_args()
-
-    if args.dry_run:
-        print("=== DRY-RUN MODE — no files will be written ===\n")
-
-    state = load_state()
-
-    print("--- Class notes pipeline ---")
-    cn_processed, cn_errors = process_class_notes(state, args.model, args.dry_run)
-
-    print("\n--- Past papers pipeline ---")
-    pp_processed, pp_errors = process_past_papers(state, args.model, args.dry_run)
-
-    total_processed = cn_processed + pp_processed
-    total_errors = cn_errors + pp_errors
-
-    print(f"\n{'='*60}")
-    print(f"Done.  Processed: {total_processed}  |  Errors: {total_errors}")
-    if total_errors:
-        print("Re-run after fixing errors; processed files will be skipped.", file=sys.stderr)
-    return 1 if total_errors else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-</file>
-
-<file path="02_parsers/merge_theory_ollama.py">
-#!/usr/bin/env python3
-"""
-merge_theory_ollama.py — Intelligently merges freshly parsed class notes into
-an existing Theory.md using a local Ollama LLM.
-
-Usage:
-    python merge_theory_ollama.py <new_notes.md> <Topic_XX_Name> [--model llama3]
-
-Reads:  <new_notes.md>  (freshly parsed Markdown from parse_class_notes.py)
-        03_knowledge_base/<Topic_XX_Name>/Theory.md  (existing KB file, if any)
-Writes: 03_knowledge_base/<Topic_XX_Name>/Theory.md  (consolidated output)
-
-If Theory.md does not exist yet, the new notes are written as-is (no merge
-needed). If it does exist, the LLM is asked to integrate the new content into
-the correct sub-headings without duplicating concepts.
-"""
-
-import argparse
-import sys
-from pathlib import Path
-
-import ollama
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-KB_DIR = REPO_ROOT / "03_knowledge_base"
-
-DEFAULT_MODEL = "llama3"
-
-# Keep prompt + both documents under roughly 6 000 chars to stay comfortably
-# within small-model context windows (~4 096 tokens).  Content beyond this
-# limit is truncated — a warning is printed so the caller knows.
-MAX_CONTENT_CHARS = 6_000
-
-SYSTEM_PROMPT = """\
-You are an expert educational content editor for IGCSE Computer Science (0478).
-
-Your task is to merge two Markdown documents into one consolidated Theory.md file:
-  1. EXISTING_THEORY — the current knowledge-base file for this topic.
-  2. NEW_NOTES — freshly parsed class notes that may add or clarify content.
-
-Rules you MUST follow:
-- Preserve the Markdown heading hierarchy of EXISTING_THEORY exactly.
-- Find the correct sub-heading(s) in EXISTING_THEORY where each piece of
-  NEW_NOTES content belongs and insert it there.
-- Do NOT duplicate any concept that is already present in EXISTING_THEORY.
-- Do NOT invent, paraphrase, or summarise — copy text verbatim from the source
-  documents only.
-- If NEW_NOTES introduces a concept with no matching heading in EXISTING_THEORY,
-  create a new sub-heading at the appropriate level.
-- Output ONLY the final consolidated Markdown — no preamble, no commentary,
-  no code fences wrapping the whole document.
-"""
-
-
-def merge_via_llm(existing_text: str, new_notes_text: str, model: str) -> str:
-    existing_chars = len(existing_text)
-    new_chars = len(new_notes_text)
-    total = existing_chars + new_chars
-
-    if total > MAX_CONTENT_CHARS:
-        # Distribute the budget proportionally; always keep at least 500 chars of each.
-        existing_budget = max(500, int(MAX_CONTENT_CHARS * existing_chars / total))
-        new_budget = max(500, MAX_CONTENT_CHARS - existing_budget)
-        if existing_chars > existing_budget or new_chars > new_budget:
-            print(
-                f"  WARN: combined document size ({total} chars) exceeds {MAX_CONTENT_CHARS}-char "
-                f"limit — truncating (existing: {existing_budget}, new: {new_budget}). "
-                "Consider upgrading to a larger model for full context.",
-                file=sys.stderr,
-            )
-        existing_text = existing_text[:existing_budget]
-        new_notes_text = new_notes_text[:new_budget]
-
-    user_prompt = (
-        "Merge the following two documents into one consolidated Theory.md.\n\n"
-        "=== EXISTING_THEORY ===\n"
-        f"{existing_text}\n\n"
-        "=== NEW_NOTES ===\n"
-        f"{new_notes_text}\n\n"
-        "Return ONLY the merged Markdown content."
-    )
-
-    response = ollama.chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-    return response["message"]["content"].strip()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "new_notes",
-        type=Path,
-        help="Path to the freshly parsed Markdown file (e.g. a temp file from parse_class_notes.py)",
-    )
-    parser.add_argument(
-        "topic_folder",
-        help="Canonical topic folder name, e.g. Topic_01_Data_Representation",
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help=f"Ollama model name (default: {DEFAULT_MODEL})",
-    )
-    args = parser.parse_args()
-
-    new_notes_path = args.new_notes.resolve()
-    if not new_notes_path.is_file():
-        print(f"FAIL: new_notes file not found: {new_notes_path}", file=sys.stderr)
-        return 1
-
-    topic_dir = KB_DIR / args.topic_folder
-    theory_path = topic_dir / "Theory.md"
-
-    new_notes_text = new_notes_path.read_text(encoding="utf-8").strip()
-    if not new_notes_text:
-        print(f"FAIL: new_notes file is empty: {new_notes_path}", file=sys.stderr)
-        return 1
-
-    # If no existing Theory.md, just write the new notes directly — no merge needed.
-    if not theory_path.is_file():
-        topic_dir.mkdir(parents=True, exist_ok=True)
-        theory_path.write_text(new_notes_text + "\n", encoding="utf-8")
-        print(f"PASS: created {theory_path.relative_to(REPO_ROOT)} ({len(new_notes_text)} chars, no prior content to merge)")
-        return 0
-
-    existing_text = theory_path.read_text(encoding="utf-8").strip()
-    if not existing_text:
-        # File exists but is empty — treat same as not existing.
-        theory_path.write_text(new_notes_text + "\n", encoding="utf-8")
-        print(f"PASS: wrote {theory_path.relative_to(REPO_ROOT)} (existing file was empty)")
-        return 0
-
-    print(f"Merging into {theory_path.relative_to(REPO_ROOT)} via {args.model} ...")
+def extract_file(converter: DocumentConverter, source_path: Path, output_dir: Path) -> bool:
+    """Convert a single file to Markdown in output_dir. Returns True on success."""
+    out_path = output_dir / f"{source_path.stem}.md"
+    print(f"  Extracting: {source_path.name} -> {out_path.relative_to(REPO_ROOT)}")
     try:
-        merged = merge_via_llm(existing_text, new_notes_text, args.model)
+        result = converter.convert(str(source_path))
+        md_content = result.document.export_to_markdown()
+        out_path.write_text(md_content, encoding="utf-8")
+        print(f"  OK: {len(md_content):,} chars written")
+        return True
     except Exception as exc:
-        print(f"FAIL: Ollama error during merge — {exc}", file=sys.stderr)
-        return 1
-
-    if not merged:
-        print("FAIL: LLM returned empty content — Theory.md NOT overwritten.", file=sys.stderr)
-        return 1
-
-    theory_path.write_text(merged + "\n", encoding="utf-8")
-    print(f"PASS: merged {theory_path.relative_to(REPO_ROOT)} ({len(existing_text)} -> {len(merged)} chars)")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-</file>
-
-<file path="02_parsers/parse_class_notes.py">
-#!/usr/bin/env python3
-"""Parse a class-notes file (PDF or DOCX) in 01_raw_sources/ into clean
-Markdown in 03_knowledge_base/.
-
-Usage:
-    python parse_class_notes.py <input.pdf|.docx> --topic 01 --name Data_Representation
-
-Reads ONLY from 01_raw_sources/. Writes ONLY into 03_knowledge_base/, using
-the Topic_XX_Name.md naming convention (official syllabus numbering -- see
-00_syllabus/). If the target file already exists, the parsed content is
-APPENDED as a new section rather than overwritten, since a topic's
-Markdown is meant to accumulate from multiple raw sources (e.g. a full
-notes PDF and a separate summary docx) without losing earlier work.
-
-PDF heuristics are tuned to this department's notes style: short
-header-like lines, "-"/bullet-glyph exam-style points, and number-table
-blocks for conversions (kept as fenced code blocks).
-
-DOCX extraction relies on real structural signals instead of text shape:
-a paragraph is a heading only if ALL of its text is bold, and a bullet
-only if Word's own list numbering (`<w:numPr>`) is present. Processing
-stops entirely at a paragraph reading exactly "Worksheet" or "Answers" --
-in this department's summary template that marks an appendix of
-past-paper references with no real text (pasted screenshots), not notes
-content.
-"""
-
-import argparse
-import re
-import sys
-from pathlib import Path
-
-import docx
-import pdfplumber
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-RAW_SOURCES_DIR = ROOT_DIR / "01_raw_sources"
-KNOWLEDGE_BASE_DIR = ROOT_DIR / "03_knowledge_base"
-
-SUBSECTION_RE = re.compile(r"^\d+\.\d+\s+\S")
-NUMBERED_HEADING_RE = re.compile(r"^\d+\.\s+[A-Z][a-zA-Z ]{2,40}$")
-BULLET_RE = re.compile(r"^[-•●–—«]\s*")
-TABLE_ROW_RE = re.compile(r"^[\d\sA-Fa-f.,+\-=()%]+$")
-DOCX_STOP_HEADINGS = {"worksheet", "answers"}
-
-
-# --- PDF extraction --------------------------------------------------------
-
-def extract_pdf_lines(pdf_path: Path) -> list[str]:
-    lines: list[str] = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text(x_tolerance=1.5) or ""
-            for raw_line in text.split("\n"):
-                line = raw_line.strip()
-                if line:
-                    lines.append(line)
-    return lines
-
-
-def is_pdf_heading(line: str) -> bool:
-    if BULLET_RE.match(line):
+        print(f"  FAIL: {exc}", file=sys.stderr)
         return False
-    if TABLE_ROW_RE.match(line):
-        return False
-    if SUBSECTION_RE.match(line):
-        return True
-    word_count = len(line.split())
-    ends_mid_sentence = line.endswith((".", ",", ";")) and not line.endswith("...")
-    return word_count <= 7 and not ends_mid_sentence and line[0].isalpha() and line[0].isupper()
 
 
-def is_table_row(line: str) -> bool:
-    return bool(TABLE_ROW_RE.match(line)) and any(ch.isdigit() for ch in line)
+def scan_source_dir(source_dir: Path) -> list[Path]:
+    return [
+        f for f in sorted(source_dir.rglob("*"))
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
 
-
-def pdf_to_markdown_lines(pdf_path: Path) -> list[str]:
-    lines = extract_pdf_lines(pdf_path)
-    out: list[str] = []
-    table_buffer: list[str] = []
-
-    def flush_table():
-        if table_buffer:
-            out.append("```")
-            out.extend(table_buffer)
-            out.append("```")
-            out.append("")
-            table_buffer.clear()
-
-    # Drop the source's own first line (its title) -- the caller emits its own H1.
-    body = lines[1:] if lines else []
-
-    for line in body:
-        if is_table_row(line):
-            table_buffer.append(line)
-            continue
-        flush_table()
-
-        if SUBSECTION_RE.match(line):
-            out.append(f"## {line}")
-            out.append("")
-        elif NUMBERED_HEADING_RE.match(line) or is_pdf_heading(line):
-            out.append(f"### {line}")
-            out.append("")
-        elif BULLET_RE.match(line):
-            out.append(f"- {BULLET_RE.sub('', line)}")
-        else:
-            out.append(line)
-            out.append("")
-
-    flush_table()
-    return out
-
-
-# --- DOCX extraction --------------------------------------------------------
-
-def is_docx_heading(paragraph) -> bool:
-    runs = [r for r in paragraph.runs if r.text.strip()]
-    if not runs:
-        return False
-    if not all(r.bold for r in runs):
-        return False
-    text = paragraph.text.strip()
-    if len(text) <= 80:
-        return True
-    # Numbered subsection titles (e.g. "4.2 Programming Languages, ...") are
-    # an unambiguous structural marker even when long -- don't drop them
-    # just because the title itself runs past the generic length cap.
-    return bool(SUBSECTION_RE.match(text))
-
-
-def is_docx_list_item(paragraph) -> bool:
-    return "<w:numPr>" in paragraph._p.xml
-
-
-def docx_table_to_markdown(table) -> list[str]:
-    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-    if not rows:
-        return []
-    out = ["| " + " | ".join(rows[0]) + " |", "|" + "|".join(["---"] * len(rows[0])) + "|"]
-    for row in rows[1:]:
-        out.append("| " + " | ".join(row) + " |")
-    out.append("")
-    return out
-
-
-def docx_to_markdown_lines(docx_path: Path) -> list[str]:
-    document = docx.Document(docx_path)
-    out: list[str] = []
-    first_heading_seen = False
-
-    for block in document.iter_inner_content():
-        if isinstance(block, docx.table.Table):
-            out.extend(docx_table_to_markdown(block))
-            continue
-
-        text = block.text.strip()
-        if not text:
-            continue
-
-        # Checked regardless of formatting -- in this department's summary
-        # template, "Worksheet"/"Answers" are NOT bold in the source XML
-        # despite reading visually as section labels, so heading detection
-        # alone won't catch them.
-        if text.lower() in DOCX_STOP_HEADINGS:
-            break
-
-        if is_docx_heading(block):
-            if not first_heading_seen:
-                # Drop the source's own title -- the caller emits its own H1.
-                first_heading_seen = True
-                continue
-            if re.match(r"^\d+\.\d+\s+\S", text):
-                out.append(f"## {text}")
-            elif re.match(r"^\d+\.\s+\S", text):
-                out.append(f"## {text}")
-            elif re.match(r"^[a-z]\.\s+\S", text):
-                out.append(f"### {text}")
-            else:
-                out.append(f"#### {text}")
-            out.append("")
-        elif is_docx_list_item(block):
-            out.append(f"- {text}")
-        else:
-            out.append(text)
-            out.append("")
-
-    return out
-
-
-# --- Shared output ----------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_file", type=Path, help="Path to a .pdf or .docx under 01_raw_sources/")
-    parser.add_argument("--topic", required=True, help="Two-digit syllabus topic number, e.g. 01")
-    parser.add_argument("--name", required=True, help="Topic name in Topic_XX_Name form, e.g. Data_Representation")
+    parser.add_argument(
+        "--file",
+        help="Convert a single file instead of scanning the source directory.",
+    )
+    parser.add_argument(
+        "--source-dir",
+        default=str(RAW_SOURCES_DIR),
+        help="Root directory to scan (default: 01_raw_sources/).",
+    )
+    parser.add_argument(
+        "--staging-dir",
+        default=str(STAGING_DIR),
+        help="Output directory for staged Markdown (default: 03_knowledge_base/_staging/).",
+    )
     args = parser.parse_args()
 
-    input_file = args.input_file.resolve()
-    try:
-        input_file.relative_to(RAW_SOURCES_DIR.resolve())
-    except ValueError:
-        print(f"FAIL: input must be under {RAW_SOURCES_DIR} (got {input_file})", file=sys.stderr)
-        return 1
-    if not input_file.is_file():
-        print(f"FAIL: {input_file} does not exist.", file=sys.stderr)
-        return 1
+    staging_dir = Path(args.staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
 
-    suffix = input_file.suffix.lower()
-    if suffix == ".pdf":
-        body_lines = pdf_to_markdown_lines(input_file)
-    elif suffix == ".docx":
-        body_lines = docx_to_markdown_lines(input_file)
-    else:
-        print(f"FAIL: unsupported file type {suffix} (expected .pdf or .docx)", file=sys.stderr)
-        return 1
+    # Configure PDF Pipeline Options to drop OCR for native digital files
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = False  # Bypasses RapidOCR crash, runs significantly faster
 
-    if not body_lines:
-        print(f"FAIL: no content extracted from {input_file}.", file=sys.stderr)
-        return 1
-
-    KNOWLEDGE_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = KNOWLEDGE_BASE_DIR / f"Topic_{args.topic}_{args.name}.md"
-    title = f"Topic {int(args.topic)}: {args.name.replace('_', ' ')}"
-
-    if output_path.exists():
-        existing = output_path.read_text(encoding="utf-8").rstrip()
-        section = "\n".join([f"## Additional Source: {input_file.name}", ""] + body_lines).rstrip()
-        markdown = existing + "\n\n" + section + "\n"
-        mode = "appended to"
-    else:
-        markdown = "\n".join([f"# {title}", ""] + body_lines).rstrip() + "\n"
-        mode = "wrote"
-
-    output_path.write_text(markdown, encoding="utf-8")
-    print(f"PASS: {mode} {output_path} ({len(body_lines)} new lines from {input_file.name})")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-</file>
-
-<file path="02_parsers/parse_past_paper.py">
-#!/usr/bin/env python3
-"""Link an official Cambridge question paper (QP) with its mark scheme (MS)
-into one Markdown file in 03_knowledge_base/, keyed by question-part label
-(e.g. 1(a), 1(c)(ii)).
-
-Usage:
-    python parse_past_paper.py <qp.pdf> <ms.pdf> --code 0478_s20_11
-
-Reads ONLY from 01_raw_sources/. Writes ONLY into 03_knowledge_base/.
-
-Scope note: targets the official year-by-paper PDFs under
-01_raw_sources/past_papers/<year>/, which have a real text layer. The
-pre-sorted-by-topic 01_raw_sources/past_papers/topical/ folder is a
-third-party screenshot compilation with no extractable text -- it is out
-of scope for this script (would need OCR; see project notes). Output here
-is NOT topic-tagged: a single paper covers many syllabus topics. Mapping
-each linked Q&A pair to a Topic_XX file is a separate, later step.
-"""
-
-import argparse
-import re
-import sys
-from pathlib import Path
-
-import pdfplumber
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-RAW_SOURCES_DIR = ROOT_DIR / "01_raw_sources"
-KNOWLEDGE_BASE_DIR = ROOT_DIR / "03_knowledge_base"
-
-PAPER_CODE_RE = re.compile(r"^\d{4}/\d+(/[A-Z]/[A-Z]/\d+)?$")
-PAGE_NUM_RE = re.compile(r"^\d+$")
-DOTTED_BLANK_RE = re.compile(r"\.{5,}")
-BOILERPLATE_RE = re.compile(
-    r"^(PUBLISHED|BLANK PAGE|Question\s+Answer\s+Marks|GENERIC MARKING PRINCIPLE|"
-    r"PhysicsAndMathsTutor\.com|.*UCLES.*|Cambridge IGCSE.*|.*Page \d+ of \d+.*)$",
-    re.IGNORECASE,
-)
-
-# Recent QP printings add a rotated "DO NOT WRITE IN THIS MARGIN" strip down
-# the page edge plus a scan barcode; pdfplumber recovers the watermark as
-# one all-caps word per line (its letters AND word order both reversed --
-# "DO NOT WRITE IN THIS MARGIN" becomes "NIGRAM SIHT NI ETIRW TON OD" before
-# the line-split), and the barcode/some symbol-font glyphs as unmapped
-# "(cid:N)" tokens. Neither carries real content, so both are stripped.
-CID_GLYPH_RE = re.compile(r"\(cid:\d+\)")
-MARGIN_WATERMARK_WORDS = {"NIGRAM", "SIHT", "NI", "ETIRW", "TON", "OD"}
-BARCODE_RE = re.compile(r"^\*\s*\d+\s*\*$")
-
-# Tick-box questions render their checkmark as a symbol-font glyph in the
-# Unicode Private Use Area (e.g. U+F0FC for a Wingdings-style checkbox).
-# Extraction recovers the character itself but not which column/row it was
-# visually aligned to, so 2+ of them signal lost positional information.
-PUA_GLYPH_RE = re.compile(r"[-]")
-
-SUBPART_RE = re.compile(r"^\(([a-z])\)\s+(.*)$")
-SUBSUBPART_RE = re.compile(r"^\(([ivx]+)\)\s+(.*)$")
-MAIN_Q_RE = re.compile(r"^(\d+)\s+([A-Z(].*)$")
-
-
-def is_boilerplate(line: str) -> bool:
-    return bool(
-        PAPER_CODE_RE.match(line)
-        or PAGE_NUM_RE.match(line)
-        or DOTTED_BLANK_RE.search(line)
-        or BOILERPLATE_RE.match(line)
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
     )
 
-
-def extract_lines(pdf_path: Path) -> list[str]:
-    """Extracts text lines, dropping boilerplate and stopping entirely once the
-    closing copyright notice is reached (it runs on with no question markers,
-    so nothing after it can be reliably attributed to a question part)."""
-    lines: list[str] = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text(x_tolerance=1.5) or ""
-            for raw_line in text.split("\n"):
-                line = CID_GLYPH_RE.sub("", raw_line).strip()
-                if line.startswith("Permission to reproduce"):
-                    return lines
-                if not line or line in MARGIN_WATERMARK_WORDS or BARCODE_RE.match(line):
-                    continue
-                if not is_boilerplate(line):
-                    lines.append(line)
-    return lines
-
-
-def parse_qp(lines: list[str]) -> dict[str, str]:
-    """Returns {part_label: question_text}, e.g. {'1(a)': '...', '1(c)(ii)': '...'}."""
-    parts: dict[str, list[str]] = {}
-    current_main = ""
-    current_sub = ""
-    current_label = ""
-    expected_main = 1
-
-    def close_part():
-        if current_label and current_label not in parts:
-            parts[current_label] = []
-
-    for line in lines:
-        remaining = line
-
-        # A main-question marker is only ever the first thing on a line, but
-        # CIE often prints its first sub-part marker right after it on the
-        # *same* line (e.g. "4 (a) Tickets for a theme park..."), so only
-        # peel this off once before falling into the sub/sub-sub loop below.
-        m_main = MAIN_Q_RE.match(remaining)
-        # Programming questions often show line-numbered pseudocode/algorithm
-        # listings ("01", "02", ... "17") for the candidate to trace or
-        # complete. Zero-padded numbers are never real CIE question numbers
-        # but can coincidentally equal expected_main (e.g. listing line "07"
-        # when question 7 hasn't appeared yet), which would otherwise hijack
-        # the counter and silently swallow every following real question as
-        # a continuation of the listing's last line.
-        if m_main and not m_main.group(1).startswith("0") and int(m_main.group(1)) == expected_main:
-            current_main = m_main.group(1)
-            current_sub = ""
-            current_label = current_main
-            expected_main += 1
-            close_part()
-            remaining = m_main.group(2)
-
-        # A sub-part letter and its own first sub-sub-part roman numeral can
-        # likewise share one line (e.g. "(a) (i) Identify..."), so peel off
-        # every marker sitting at the front of what's left, not just one.
-        while True:
-            m_subsub = SUBSUBPART_RE.match(remaining)
-            # "(i)" is ambiguous between a roman-numeral sub-sub-part and a
-            # literal sub-part letter "i" -- once inside a lettered sub-part,
-            # treat an [ivx]+ marker as nesting under it, not as a sibling.
-            if m_subsub and current_main and current_sub:
-                current_label = f"{current_main}({current_sub})({m_subsub.group(1)})"
-                close_part()
-                remaining = m_subsub.group(2)
-                continue
-            m_sub = SUBPART_RE.match(remaining)
-            if m_sub and current_main:
-                current_sub = m_sub.group(1)
-                current_label = f"{current_main}({current_sub})"
-                close_part()
-                remaining = m_sub.group(2)
-                continue
-            break
-
-        if current_label and remaining:
-            parts.setdefault(current_label, []).append(remaining)
-
-    return {label: " ".join(text_lines).strip() for label, text_lines in parts.items()}
-
-
-def format_answer_cell(text: str) -> str:
-    """Turns one Answer cell's raw text (PDF line-wraps preserved as \\n) into
-    either a flowing paragraph (prose with no marking-point bullets) or a
-    Markdown list (lines that start with a dash are separate marking points
-    -- CIE mark schemes write these as e.g. "Any two from: / - Speaker / -
-    Touchscreen"). A non-dash line is folded into whichever group precedes
-    it, since it's a wrapped continuation of that line, not a new point."""
-    raw_lines = [l.strip() for l in text.split("\n") if l.strip()]
-    groups: list[str] = []
-    for line in raw_lines:
-        if re.match(r"^[-−–—•]\s*", line):
-            groups.append(re.sub(r"^[-−–—•]\s*", "- ", line))
-        elif groups:
-            groups[-1] += " " + line
-        else:
-            groups.append(line)
-    return "\n".join(groups)
-
-
-def parse_ms(pdf_path: Path) -> dict[str, dict]:
-    """Returns {part_label: {'answer': str, 'marks': str}}.
-
-    Cambridge mark schemes render the Question/Answer/Marks grid as a real
-    bordered table -- pdfplumber's find_tables() reads it directly off the
-    PDF's own grid lines (each logical column comes back split into 3
-    sub-columns by faint internal rulings, so every row has a width that's a
-    multiple of 3; the real content is the first non-empty cell in each
-    third). This replaces an earlier hardcoded-x-position approach (label
-    x0<120, answer 120<=x0<700, marks x0>=700) that worked for the one paper
-    it was tuned against but silently produced zero matches on others, since
-    different print runs shift the real column edges by tens of points.
-    Nested sub-tables (e.g. a tick-grid or truth-table embedded inside one
-    Answer cell) are returned by find_tables() as their own separate table
-    too, with an unrelated column count that can still coincidentally be a
-    multiple of 3 -- and a bare digit in their own data (e.g. a truth
-    table's "0"/"1" output column) can coincidentally collide with a real
-    question's number. Requiring the table's own literal "Question" header
-    cell confirms it's the genuine grid and not one of these, which also
-    means a long answer that spans a page break -- CIE re-prints the
-    question-number label at the top of the new page's table when this
-    happens -- can be safely glued back onto the same entry instead of one
-    chunk silently overwriting the other.
-    """
-    entries: dict[str, dict] = {}
-    LABEL_RE = re.compile(r"^\d+(\([a-z]+\))*$")
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            for table in page.find_tables():
-                rows = table.extract()
-                if not rows or len(rows[0]) % 3 != 0:
-                    continue
-                col_width = len(rows[0]) // 3
-                has_header = any(
-                    (next((c for c in row[:col_width] if c), "") or "").strip() == "Question"
-                    for row in rows
-                )
-                if not has_header:
-                    continue
-
-                current_label = ""
-                current_answer: list[str] = []
-                current_marks = ""
-
-                def flush():
-                    if not current_label:
-                        return
-                    formatted = "\n".join(current_answer).strip()
-                    if current_label in entries:
-                        entries[current_label]["answer"] = (
-                            entries[current_label]["answer"] + "\n" + formatted
-                        ).strip()
-                        if current_marks and not entries[current_label]["marks"]:
-                            entries[current_label]["marks"] = current_marks
-                    else:
-                        entries[current_label] = {"answer": formatted, "marks": current_marks}
-
-                for row in rows:
-                    label_group = row[:col_width]
-                    answer_group = row[col_width:2 * col_width]
-                    marks_group = row[2 * col_width:]
-                    label_text = (next((c for c in label_group if c), "") or "").strip()
-                    answer_raw = next((c for c in answer_group if c), "") or ""
-                    marks_text = " ".join((next((c for c in marks_group if c), "") or "").split())
-
-                    # No is_boilerplate() check here -- it's tuned for whole
-                    # extracted PDF lines (page numbers, paper codes), and a
-                    # bare single/double-digit question label like "1" or
-                    # "3" satisfies its PAGE_NUM_RE check too, which would
-                    # silently drop that question's MS entry. Table cells
-                    # can't contain stray running-header/footer text in the
-                    # first place (it lives outside the table's grid), so
-                    # the LABEL_RE match below is the only filter needed.
-                    if not label_text and not answer_raw and not marks_text:
-                        continue
-
-                    if LABEL_RE.match(label_text):
-                        flush()
-                        current_label = label_text
-                        current_answer = [format_answer_cell(answer_raw)] if answer_raw else []
-                        current_marks = marks_text
-                    elif current_label and answer_raw:
-                        current_answer.append(format_answer_cell(answer_raw))
-                        if marks_text and not current_marks:
-                            current_marks = marks_text
-                flush()
-
-    return entries
-
-
-def to_markdown(paper_code: str, qp_parts: dict[str, str], ms_entries: dict[str, dict]) -> str:
-    out = [f"# Past Paper {paper_code}: Linked Questions and Mark Scheme", ""]
-
-    def sort_key(label: str):
-        nums = re.findall(r"\d+|[a-z]+", label)
-        return [int(n) if n.isdigit() else n for n in nums]
-
-    # A stem can be a bare main question ("4") or a lettered sub-part that
-    # itself introduces roman-numeral children ("4(c)" before "4(c)(i)") --
-    # only what matters is whether something else nests directly under it.
-    is_stem_only = {
-        label: any(other.startswith(f"{label}(") for other in qp_parts)
-        for label in qp_parts
-    }
-
-    for label in sorted(qp_parts, key=sort_key):
-        question = qp_parts[label]
-        ms = ms_entries.get(label)
-        out.append(f"## Question {label}")
-        out.append("")
-        out.append(f"**Question:** {question}")
-        out.append("")
-        if ms:
-            marks_suffix = f" ({ms['marks']} mark{'s' if ms['marks'] != '1' else ''})" if ms["marks"] else ""
-            out.append(f"**Mark scheme{marks_suffix}:**")
-            out.append("")
-            out.append(ms["answer"] if ms["answer"] else "% TODO: Insufficient source content")
-            if len(PUA_GLYPH_RE.findall(question)) >= 2 or len(PUA_GLYPH_RE.findall(ms["answer"])) >= 2:
-                out.append("")
-                out.append(
-                    "_Note: this question uses a symbol-font glyph that didn't extract "
-                    "as normal text (e.g. a tick-box checkmark, or a pseudocode "
-                    "assignment arrow `<-`) -- some detail may be lost above, verify "
-                    "against the source PDF before using this as a complete answer._"
-                )
-        elif is_stem_only[label]:
-            out.append("_(Scenario introduction for the parts below -- not individually marked.)_")
-        else:
-            out.append("**Mark scheme:** % TODO: Insufficient source content -- no matching MS entry found")
-        out.append("")
-
-    unmatched = sorted(set(ms_entries) - set(qp_parts), key=sort_key)
-    if unmatched:
-        out.append("## Unmatched Mark Scheme Entries (no corresponding QP part found)")
-        out.append("")
-        for label in unmatched:
-            out.append(f"- {label}: {ms_entries[label]['answer']}")
-        out.append("")
-
-    return "\n".join(out).rstrip() + "\n"
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("qp_pdf", type=Path)
-    parser.add_argument("ms_pdf", type=Path)
-    parser.add_argument("--code", required=True, help="Paper code for the output filename, e.g. 0478_s20_11")
-    args = parser.parse_args()
-
-    qp_pdf = args.qp_pdf.resolve()
-    ms_pdf = args.ms_pdf.resolve()
-    for path in (qp_pdf, ms_pdf):
-        try:
-            path.relative_to(RAW_SOURCES_DIR.resolve())
-        except ValueError:
-            print(f"FAIL: input must be under {RAW_SOURCES_DIR} (got {path})", file=sys.stderr)
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.is_file():
+            print(f"ERROR: File not found: {file_path}", file=sys.stderr)
             return 1
-        if not path.is_file():
-            print(f"FAIL: {path} does not exist.", file=sys.stderr)
-            return 1
+        return 0 if extract_file(converter, file_path, staging_dir) else 1
 
-    qp_lines = extract_lines(qp_pdf)
-    qp_parts = parse_qp(qp_lines)
-    ms_entries = parse_ms(ms_pdf)
+    source_dir = Path(args.source_dir)
+    files = scan_source_dir(source_dir)
+    if not files:
+        print(f"No supported documents found under {source_dir}")
+        return 0
 
-    if not qp_parts:
-        print(f"FAIL: no question parts detected in {qp_pdf}.", file=sys.stderr)
-        return 1
+    print(f"Found {len(files)} document(s) to extract.\n")
+    ok = fail = 0
+    for f in files:
+        if extract_file(converter, f, staging_dir):
+            ok += 1
+        else:
+            fail += 1
 
-    markdown = to_markdown(args.code, qp_parts, ms_entries)
-
-    KNOWLEDGE_BASE_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = KNOWLEDGE_BASE_DIR / f"PastPaper_{args.code}.md"
-    output_path.write_text(markdown, encoding="utf-8")
-
-    matched = sum(1 for label in qp_parts if label in ms_entries)
-    print(f"PASS: wrote {output_path} ({len(qp_parts)} question parts, {matched} matched to a mark scheme entry)")
-    return 0
+    print(f"\nDone.  OK: {ok}  |  Failed: {fail}")
+    return 1 if fail else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-</file>
-
-<file path="02_parsers/route_questions.py">
-#!/usr/bin/env python3
-"""
-Route parsed past paper questions to their semantic syllabus topic using local Ollama.
-"""
-
-import os
-import re
-import json
-import argparse
-import requests
-from pathlib import Path
-
-ROOT_DIR = Path(__file__).resolve().parent.parent
-KB_DIR = ROOT_DIR / "03_knowledge_base"
-OLLAMA_URL = "http://localhost:11434/api/generate"
-
-# Note: Update if your local Ollama tag differs (e.g. "llama3.2:3b")
-MODEL_NAME = "llama3.2" 
-
-TOPICS = [
-    "Topic_01_Data_Representation",
-    "Topic_02_Data_Transmission",
-    "Topic_03_Hardware",
-    "Topic_04_Software",
-    "Topic_05_The_Internet_and_its_uses",
-    "Topic_06_Automated_and_emerging_technologies",
-    "Topic_07_Algorithm_design_and_problem_solving",
-    "Topic_08_Programming",
-    "Topic_09_Databases",
-    "Topic_10_Boolean_logic"
-]
-
-def parse_past_paper(file_path: Path) -> list:
-    """Splits a PastPaper_*.md file into individual Question/Mark Scheme chunks."""
-    content = file_path.read_text(encoding="utf-8")
-    
-    # Split using multiline regex lookahead for '## Question '
-    chunks = re.split(r'(?m)^(?=## Question )', content)
-    
-    questions = []
-    source_file = file_path.name
-    
-    for chunk in chunks:
-        chunk = chunk.strip()
-        if not chunk.startswith("## Question "):
-            continue
-        
-        # Extract the question label (e.g., "1(a)")
-        match = re.search(r'^## Question (.+)', chunk)
-        q_label = match.group(1).strip() if match else "Unknown"
-        
-        questions.append({
-            "label": q_label,
-            "content": chunk,
-            "source_file": source_file
-        })
-        
-    return questions
-
-def classify_question(chunk_content: str) -> dict:
-    """Uses local Ollama to classify the chunk into a syllabus topic."""
-    prompt = f"""You are an IGCSE 0478 Computer Science expert. Analyze the following Question and Mark Scheme chunk and classify it into one of the official syllabus topics.
-
-Official Topics:
-{json.dumps(TOPICS, indent=2)}
-
-Question Chunk:
-{chunk_content}
-
-Extract the following information and return ONLY a raw JSON object (no markdown formatting, no code blocks).
-You MUST follow this schema exactly:
-{{
-  "topic_folder": "Exact name of the destination folder from the list above",
-  "tags": ["3-5", "ultra-lean", "strings", "representing", "concepts"],
-  "total_marks": 6, 
-  "syllabus_ref": "A short breadcrumb string (e.g. '3.2 Input/Output')"
-}}
-"""
-    try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": MODEL_NAME,
-            "prompt": prompt,
-            "format": "json",  # Forces strict JSON output in Ollama
-            "stream": False
-        }, timeout=90) # Give local model time to process long context
-        response.raise_for_status()
-        
-        result_json = response.json().get("response", "")
-        parsed = json.loads(result_json)
-        
-        # Guardrail against hallucinated folder names
-        if parsed.get("topic_folder") not in TOPICS:
-            print(f"    [!] Warning: Model hallucinated topic '{parsed.get('topic_folder')}'. Defaulting to Topic_01.")
-            parsed["topic_folder"] = TOPICS[0]
-            
-        return parsed
-        
-    except requests.exceptions.RequestException as e:
-        print(f"    [!] Network/API error communicating with Ollama: {e}")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"    [!] Error parsing JSON from model output: {e}\nRaw Output: {result_json}")
-        return None
-
-def process_file(file_path: Path):
-    print(f"\nProcessing {file_path.name}...")
-    questions = parse_past_paper(file_path)
-    
-    if not questions:
-        print("  No questions found. Skipping.")
-        return
-
-    for q in questions:
-        print(f"  Routing Question {q['label']}...")
-        classification = classify_question(q['content'])
-        
-        if not classification:
-            print(f"  -> Failed to classify {q['label']}, skipping.")
-            continue
-            
-        topic_folder = classification.get("topic_folder")
-        tags = classification.get("tags", [])
-        total_marks = classification.get("total_marks", 0)
-        syllabus_ref = classification.get("syllabus_ref", "")
-        
-        # Build YAML frontmatter block
-        yaml_frontmatter = f"""---
-source_file: "{q['source_file']}"
-question_label: "{q['label']}"
-topic_folder: "{topic_folder}"
-tags: {json.dumps(tags)}
-total_marks: {total_marks}
-syllabus_ref: "{syllabus_ref}"
----
-"""
-        # Prepend the requested metadata tag
-        metadata_tag = f"> Source: {q['source_file']}, Q{q['label']}\n\n"
-        
-        # Construct final chunk
-        final_chunk = yaml_frontmatter + metadata_tag + q['content'] + "\n\n"
-        
-        # Append to target normalized file
-        target_dir = KB_DIR / topic_folder
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_file = target_dir / "Past_Papers.md"
-        
-        with open(target_file, "a", encoding="utf-8") as f:
-            f.write(final_chunk)
-            
-        print(f"  -> Appended to {topic_folder}/Past_Papers.md")
-
-def main():
-    parser = argparse.ArgumentParser(description="Route past paper questions to topic folders via local Ollama.")
-    parser.add_argument("files", nargs="*", help="Specific PastPaper_*.md files to process (processes all if empty)")
-    args = parser.parse_args()
-    
-    if not KB_DIR.exists():
-        print(f"Error: {KB_DIR} does not exist.")
-        return
-
-    files_to_process = []
-    if args.files:
-        for f in args.files:
-            file_path = Path(f)
-            if not file_path.is_absolute():
-                file_path = KB_DIR / file_path
-            if file_path.exists():
-                files_to_process.append(file_path)
-            else:
-                print(f"Warning: File {file_path} not found.")
-    else:
-        files_to_process = list(KB_DIR.glob("PastPaper_*.md"))
-
-    if not files_to_process:
-        print("No PastPaper_*.md files found to process.")
-        return
-
-    for file_path in files_to_process:
-        process_file(file_path)
-        
-    print("\nRouting complete.")
-
-if __name__ == "__main__":
-    main()
 </file>
 
 <file path="02_parsers/split_syllabus.py">
@@ -1800,6 +582,12 @@ def migrate():
 
 if __name__ == "__main__":
     migrate()
+</file>
+
+<file path="requirements.txt">
+docling
+numpy
+ollama
 </file>
 
 <file path="resources/index.md">
@@ -3708,53 +2496,355 @@ A quality snapshot for each product domain and architectural layer. Both agents 
 - Focused debug command:
 </file>
 
-<file path="session-handoff.md">
-# Session Handoff
-
-## Next Best Step
-- **Objective:** Resume `FEAT-003` (multi-source stitching) — generate a worksheet that combines a topic's `Theory.md` with its newly-routed `Past_Papers.md` entries into one worksheet + mark-scheme `.tex` document in `05_output/`. Confirm it compiles via `./compile.sh`.
-- **Target File:** `05_output/Topic_01_Data_Representation_Worksheet.tex` (or whichever topic the user names)
-
-## Current Blockers / Risks
-- `merge_theory_ollama.py` truncates combined documents exceeding ~6 000 chars (context-window guard for small models). Topics with long existing Theory.md files may get partial merges; a warning is printed when this fires.
-- Topics 7–10 have no class-notes raw sources yet — the notes pipeline will report zero files for those topics until sources are added to `01_raw_sources/class_notes_docs/`.
-- Class notes detection requires parent directory of each file to be named exactly `Topic_XX_Name`; files sitting directly in `01_raw_sources/class_notes_docs/` (no subfolder) will be skipped.
-- Topic_08 (8 questions) and Topic_09 (9 questions) have low past-paper coverage — this reflects the actual exam's lower weighting for standalone programming/SQL questions, not a routing failure.
-
-## Recent History (STRICT LIMIT: Last 2 Sessions Only)
-
-**Session 011 (2026-06-26):**
-- **Completed:** Ingested 7 new 2024 QP/MS pairs (`m24_12`, `m24_22`, `s24_12/13/21/22/23`). Found and fixed bug: `--dry-run` was writing to state file without running subprocesses; guarded all `mark_processed`/`save_state` calls with `if not dry_run`. Cleaned 7 bogus state entries, re-ran actual pipeline: 7 processed, 0 errors, 69 new question groups routed. State: 63 entries (21 notes + 42 papers).
-- **Unfinished:** Nothing blocking. Next step is FEAT-003 worksheet generation.
-
-**Session 010 (2026-06-26):**
-- **Completed:** Upgraded `route_questions_ollama.py` with comprehensive 10-topic system prompt + negative constraints. Fixed `DEFAULT_MODEL` llama3 → llama3.2:latest in both router and digest. Added three-tier JSON fallback parser. Reset and re-ran routing: **305 questions routed across all 10 topics**. Re-bootstrapped state (56 entries). Deleted 35 intermediate `PastPaper_*.md` files from KB root.
-- **Unfinished:** Nothing blocking.
-
-## Compacted Archive
-
-*Sessions 001–009 (2026-06-25): Harness baseline built (CLAUDE.md, init.sh, compile.sh, feature_list.json 9-feature → 4-engine-feature refactor, docs/ARCHITECTURE.md, docs/PIPELINE.md). TinyTeX + tcolorbox installed. parse_class_notes.py written and hardened for PDF+DOCX; Topics 1–6 parsed. parse_past_paper.py written and hardened; 35 past papers parsed 2020–2025. igcse_preamble.tex authored (stratbox/critbox/scenario/learningoutcomes/errortrap/modelans, booktabs, longtable, tikz, fancyhdr footer fix). Topic_01 and Topic_02 .tex files compiled PASS. FEAT-001–005 all passing. Study plan 00_syllabus/6_month_zero_to_hero_plan.md added. merge_theory_ollama.py and digest_new_material.py (master orchestrator with SHA-256 state tracking) written. KB folder-per-topic normalization complete; all 10 topics have Syllabus.md and Past_Papers.md.*
-</file>
-
-<file path="02_parsers/requirements.txt">
-pdfplumber
-python-docx
-pypdf
-ollama
-</file>
-
-<file path="02_parsers/route_questions_ollama.py">
+<file path="02_parsers/digest_new_material.py">
 #!/usr/bin/env python3
 """
-route_questions_ollama.py — FEAT-005: Semantic routing of un-tagged past paper
-questions into the correct per-topic Past_Papers.md using a local Ollama LLM.
+digest_new_material.py — Master ingestion orchestrator.
+
+Scans 01_raw_sources/ for unprocessed files and runs the correct pipeline:
+
+  Class notes (PDF / DOCX)
+    -> extract_docling.py  (extracts Markdown to _staging/)
+    -> Theory.md           (staging file moved/appended into topic KB folder)
+
+  Past papers (QP + MS PDF pairs)
+    -> extract_docling.py  (extracts both PDFs to _staging/)
+    -> link_qa.py          (regex state-machine links QP/MS chunks -> JSON)
+    -> route_hybrid.py     (cosine routing + LLM YAML -> per-topic Past_Papers.md)
+    -> staging cleanup     (removes intermediate files after successful route)
+
+State is tracked in 01_raw_sources/.processed_files.json (SHA-256 keyed).
+Files already in the state file are skipped.
 
 Usage:
-    python route_questions_ollama.py <path/to/PastPaper_CODE.md> [--model llama3]
+    python digest_new_material.py [--model llama3.2] [--embed-model nomic-embed-text] [--dry-run]
 
-Reads:  03_knowledge_base/PastPaper_*.md  (un-routed output of parse_past_paper.py)
-        00_syllabus/Syllabus_Routing_Keywords.md
-Writes: 03_knowledge_base/<Topic_XX_Name>/Past_Papers.md
+Notes on file layout assumptions:
+  Class notes: 01_raw_sources/class_notes_docs/<Topic_XX_Name>/<file>.pdf|.docx
+               Parent directory name MUST match Topic_XX_Name (e.g. Topic_01_Data_Representation).
+  Past papers: 01_raw_sources/past_papers/<year>/<code>_qp_<n>.pdf
+                                                  <code>_ms_<n>.pdf
+               QP and MS are paired by matching the paper code (everything before _qp/_ms).
+"""
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RAW_SOURCES_DIR = REPO_ROOT / "01_raw_sources"
+KB_DIR          = REPO_ROOT / "03_knowledge_base"
+STAGING_DIR     = KB_DIR / "_staging"
+PARSERS_DIR     = REPO_ROOT / "02_parsers"
+STATE_FILE      = RAW_SOURCES_DIR / ".processed_files.json"
+
+TOPIC_FOLDER_RE = re.compile(r"^Topic_(\d{2})_(.+)$")
+QP_RE = re.compile(r"^(.+)_qp_(\d+)\.pdf$", re.IGNORECASE)
+MS_RE = re.compile(r"^(.+)_ms_(\d+)\.pdf$", re.IGNORECASE)
+
+DEFAULT_MODEL       = "llama3.2"
+DEFAULT_EMBED_MODEL = "nomic-embed-text"
+
+
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
+def load_state() -> dict:
+    if STATE_FILE.is_file():
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def save_state(state: dict) -> None:
+    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def mark_processed(state: dict, key: str, note: str) -> None:
+    state[key] = {"status": "processed", "note": note}
+
+
+# ---------------------------------------------------------------------------
+# Subprocess runner
+# ---------------------------------------------------------------------------
+
+def run(cmd: list, dry_run: bool = False) -> bool:
+    """Run a subprocess command. Returns True on success (exit 0)."""
+    display = " ".join(str(c) for c in cmd)
+    if dry_run:
+        print(f"  [DRY-RUN] {display}")
+        return True
+    print(f"  RUN: {display}")
+    result = subprocess.run(cmd, cwd=REPO_ROOT)
+    if result.returncode != 0:
+        print(f"  FAIL (exit {result.returncode}): {display}", file=sys.stderr)
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Class notes pipeline
+# ---------------------------------------------------------------------------
+
+def find_class_notes() -> list[tuple[Path, str, str]]:
+    """Return (file_path, topic_num, topic_name) for all class-note PDFs/DOCXs."""
+    notes_dir = RAW_SOURCES_DIR / "class_notes_docs"
+    if not notes_dir.is_dir():
+        return []
+
+    results = []
+    for f in sorted(notes_dir.rglob("*")):
+        if f.suffix.lower() not in (".pdf", ".docx"):
+            continue
+        m = TOPIC_FOLDER_RE.match(f.parent.name)
+        if not m:
+            print(
+                f"  SKIP (class note): {f.relative_to(RAW_SOURCES_DIR)} — "
+                "parent directory name does not match Topic_XX_Name pattern.",
+                file=sys.stderr,
+            )
+            continue
+        results.append((f, m.group(1), m.group(2)))
+    return results
+
+
+def process_class_notes(state: dict, dry_run: bool) -> tuple[int, int]:
+    """Returns (processed, errors)."""
+    files = find_class_notes()
+    if not files:
+        print("  No class notes found under 01_raw_sources/class_notes_docs/")
+        return 0, 0
+
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    processed = errors = 0
+
+    for note_path, topic_num, topic_name in files:
+        state_key = f"notes::{note_path.relative_to(RAW_SOURCES_DIR)}::{file_hash(note_path)}"
+        if state_key in state:
+            print(f"  SKIP (already processed): {note_path.relative_to(RAW_SOURCES_DIR)}")
+            continue
+
+        print(f"\n[Class notes] {note_path.relative_to(RAW_SOURCES_DIR)}")
+        topic_folder = f"Topic_{topic_num}_{topic_name}"
+        staging_md   = STAGING_DIR / f"{note_path.stem}.md"
+        theory_out   = KB_DIR / topic_folder / "Theory.md"
+
+        # Step 1 — extract via Docling
+        extract_ok = run(
+            [sys.executable, str(PARSERS_DIR / "extract_docling.py"), "--file", str(note_path)],
+            dry_run=dry_run,
+        )
+        if not extract_ok:
+            errors += 1
+            continue
+
+        if not dry_run:
+            if not staging_md.is_file():
+                print(f"  FAIL: expected staging output {staging_md} not found.", file=sys.stderr)
+                errors += 1
+                continue
+
+            # Step 2 — move/append into Theory.md
+            theory_out.parent.mkdir(parents=True, exist_ok=True)
+            extracted_content = staging_md.read_text(encoding="utf-8")
+            if theory_out.is_file() and theory_out.stat().st_size > 0:
+                with theory_out.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n\n---\n\n{extracted_content}")
+                print(f"  Appended to existing {theory_out.relative_to(REPO_ROOT)}")
+            else:
+                shutil.move(str(staging_md), str(theory_out))
+                print(f"  Written to {theory_out.relative_to(REPO_ROOT)}")
+
+            staging_md.unlink(missing_ok=True)
+            mark_processed(state, state_key, f"notes pipeline OK (topic {topic_folder})")
+            save_state(state)
+
+        processed += 1
+
+    return processed, errors
+
+
+# ---------------------------------------------------------------------------
+# Past papers pipeline
+# ---------------------------------------------------------------------------
+
+def find_qp_ms_pairs() -> list[tuple[Path, Path, str]]:
+    """Return (qp_path, ms_path, paper_code) for all paired QP/MS PDFs."""
+    papers_dir = RAW_SOURCES_DIR / "past_papers"
+    if not papers_dir.is_dir():
+        return []
+
+    qp_map: dict[str, Path] = {}
+    ms_map: dict[str, Path] = {}
+
+    for f in sorted(papers_dir.rglob("*.pdf")):
+        m_qp = QP_RE.match(f.name)
+        m_ms = MS_RE.match(f.name)
+        if m_qp:
+            qp_map[f"{m_qp.group(1)}__{m_qp.group(2)}"] = f
+        elif m_ms:
+            ms_map[f"{m_ms.group(1)}__{m_ms.group(2)}"] = f
+
+    pairs = []
+    for code, qp_path in qp_map.items():
+        if code in ms_map:
+            paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp_path.stem, flags=re.IGNORECASE)
+            pairs.append((qp_path, ms_map[code], paper_code))
+        else:
+            print(
+                f"  WARN: QP found with no matching MS — {qp_path.relative_to(RAW_SOURCES_DIR)}",
+                file=sys.stderr,
+            )
+    return pairs
+
+
+def process_past_papers(state: dict, model: str, embed_model: str, dry_run: bool) -> tuple[int, int]:
+    """Returns (processed, errors)."""
+    pairs = find_qp_ms_pairs()
+    if not pairs:
+        print("  No QP/MS pairs found under 01_raw_sources/past_papers/")
+        return 0, 0
+
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    processed = errors = 0
+
+    for qp_path, ms_path, paper_code in pairs:
+        h = hashlib.sha256()
+        h.update(qp_path.read_bytes())
+        h.update(ms_path.read_bytes())
+        state_key = f"pastpaper::{paper_code}::{h.hexdigest()}"
+
+        if state_key in state:
+            print(f"  SKIP (already processed): {paper_code}")
+            continue
+
+        print(f"\n[Past paper] {paper_code}")
+
+        qp_staging  = STAGING_DIR / f"{qp_path.stem}.md"
+        ms_staging  = STAGING_DIR / f"{ms_path.stem}.md"
+        linked_json = STAGING_DIR / f"{paper_code}_linked.json"
+
+        # Step 1 — extract QP via Docling
+        if not run(
+            [sys.executable, str(PARSERS_DIR / "extract_docling.py"), "--file", str(qp_path)],
+            dry_run=dry_run,
+        ):
+            errors += 1
+            continue
+
+        # Step 2 — extract MS via Docling
+        if not run(
+            [sys.executable, str(PARSERS_DIR / "extract_docling.py"), "--file", str(ms_path)],
+            dry_run=dry_run,
+        ):
+            errors += 1
+            continue
+
+        # Step 3 — link QP + MS chunks -> JSON
+        if not run(
+            [
+                sys.executable, str(PARSERS_DIR / "link_qa.py"),
+                str(qp_staging), str(ms_staging),
+                "--out", str(linked_json),
+            ],
+            dry_run=dry_run,
+        ):
+            errors += 1
+            continue
+
+        # Step 4 — hybrid route -> per-topic Past_Papers.md
+        if not run(
+            [
+                sys.executable, str(PARSERS_DIR / "route_hybrid.py"),
+                str(linked_json),
+                "--model", model,
+                "--embed-model", embed_model,
+            ],
+            dry_run=dry_run,
+        ):
+            errors += 1
+            continue
+
+        # Cleanup staging files for this pair
+        if not dry_run:
+            for staging_file in (qp_staging, ms_staging, linked_json):
+                staging_file.unlink(missing_ok=True)
+            mark_processed(state, state_key, f"past-paper pipeline OK ({paper_code})")
+            save_state(state)
+
+        processed += 1
+
+    return processed, errors
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama LLM model for YAML metadata generation (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--embed-model",
+        default=DEFAULT_EMBED_MODEL,
+        help=f"Ollama embedding model for topic routing (default: {DEFAULT_EMBED_MODEL})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be run without executing anything.",
+    )
+    args = parser.parse_args()
+
+    if args.dry_run:
+        print("=== DRY-RUN MODE — no files will be written ===\n")
+
+    state = load_state()
+
+    print("--- Class notes pipeline ---")
+    cn_processed, cn_errors = process_class_notes(state, args.dry_run)
+
+    print("\n--- Past papers pipeline ---")
+    pp_processed, pp_errors = process_past_papers(state, args.model, args.embed_model, args.dry_run)
+
+    total_processed = cn_processed + pp_processed
+    total_errors    = cn_errors    + pp_errors
+
+    print(f"\n{'='*60}")
+    print(f"Done.  Processed: {total_processed}  |  Errors: {total_errors}")
+    if total_errors:
+        print("Re-run after fixing errors; processed files will be skipped.", file=sys.stderr)
+    return 1 if total_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+</file>
+
+<file path="02_parsers/link_qa.py">
+#!/usr/bin/env python3
+"""
+link_qa.py — FEAT-007: Regex Q&A Sorter & Linker.
+
+Reads staged QP and MS Markdown files from 03_knowledge_base/_staging/,
+splits them by Cambridge numbering using a regex state machine
+(1 / (a) / (i)), links matching QP chunks to MS chunks, and writes a
+structured JSON of paired Q&A blocks to _staging/.
 """
 
 import argparse
@@ -3763,325 +2853,789 @@ import re
 import sys
 from pathlib import Path
 
-import ollama
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SYLLABUS_FILE = REPO_ROOT / "00_syllabus" / "keyword_routing.md"
-KB_DIR = REPO_ROOT / "03_knowledge_base"
+STAGING_DIR = REPO_ROOT / "03_knowledge_base" / "_staging"
 
-DEFAULT_MODEL = "llama3.2:latest"
+# Cambridge numbering state-machine patterns.
+# [1-9]\d? (not \d{1,2}) intentionally excludes zero-padded pseudocode line
+# numbers like "01 DECLARE..." that would otherwise trigger false question matches.
+MAIN_Q_RE      = re.compile(r"^(?:-\s+)?([1-9]\d?)(?=\s+[A-Za-z])")
+# Catches "- 4 (a) Text" where question number and first sub-part share a line
+MAIN_PART_RE   = re.compile(r"^(?:-\s+)?([1-9]\d?)\s+\(([a-z])\)(?:\s|$)")
+PART_RE        = re.compile(r"^(?:-\s+)?\(([a-z])\)(?:\s|$)")
+# Restricted to ivx so alphabetic parts (c, d, etc.) never match here
+SUBPART_RE     = re.compile(r"^(?:-\s+)?\(([ivx]+)\)(?:\s|$)")
 
-# Canonical topic folder names — guardrail against LLM hallucinations.
-# If the LLM returns a topic_folder not in this set, the question is SKIPPED.
-VALID_TOPIC_FOLDERS = {
-    "Topic_01_Data_Representation",
-    "Topic_02_Data_Transmission",
-    "Topic_03_Hardware",
-    "Topic_04_Software",
-    "Topic_05_The_Internet_and_Its_Uses",
-    "Topic_06_Automated_and_Emerging_Technologies",
-    "Topic_07_Algorithm_design_and_problem_solving",
-    "Topic_08_Programming",
-    "Topic_09_Databases",
-    "Topic_10_Boolean_Logic",
-}
+# Lines to skip unconditionally (HTML comments, MS section headers, comma padding)
+_SKIP_LINE_RE = re.compile(
+    r"^<!--.*-->$"                  # Docling image placeholders
+    r"|^#{1,6}\s+Cambridge\s+IGCSE" # MS inter-table section headers
+    r"|^#{1,6}\s*[,\s]+$"           # Docling-prefixed comma padding e.g. "## ,   ,"
+    r"|^[,\s]+$",                   # Bare comma padding e.g. ",             ,"
+    re.IGNORECASE,
+)
 
-QUESTION_BLOCK_RE = re.compile(r"^## Question (.+)$", re.MULTILINE)
-MAIN_QNUM_RE = re.compile(r"^(\d+)")
-# Strip markdown code fences that some models wrap JSON in despite instructions
-CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
-
-# Cap chunk text sent to the LLM to avoid overwhelming the context window.
-# The syllabus reference already occupies ~1 500 tokens; 3 000 chars ≈ 750 tokens.
-CHUNK_CHAR_LIMIT = 3_000
+# Roman numeral → integer for hierarchical sort
+_ROMAN = {r: i + 1 for i, r in enumerate(
+    ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"]
+)}
 
 
-def load_syllabus_reference() -> str:
-    if not SYLLABUS_FILE.is_file():
-        raise FileNotFoundError(f"Syllabus routing reference not found: {SYLLABUS_FILE}")
-    return SYLLABUS_FILE.read_text(encoding="utf-8")
+def _is_garbage(line: str) -> bool:
+    """Lines where >40% of chars are non-ASCII are printer/barcode watermarks."""
+    if not line:
+        return False
+    return sum(1 for c in line if ord(c) > 127) / len(line) > 0.40
 
 
-def split_into_main_question_groups(md_text: str) -> list[dict]:
+def _label(main: int, part: str = "", subpart: str = "") -> str:
+    s = str(main)
+    if part:
+        s += f"({part})"
+    if subpart:
+        s += f"({subpart})"
+    return s
+
+
+def _sort_key(label: str) -> tuple:
+    """Hierarchical sort: (main_num, part_ordinal, subpart_roman_value)."""
+    m = re.match(r"^(\d+)(?:\(([a-z]+)\)(?:\(([ivx]+)\))?)?$", label)
+    if not m:
+        return (0, 0, 0)
+    main = int(m.group(1))
+    part_val = (ord(m.group(2)[0]) - ord("a") + 1) if m.group(2) else 0
+    sub_val = _ROMAN.get(m.group(3) or "", 0)
+    return (main, part_val, sub_val)
+
+
+def _clean_body(lines: list[str]) -> str:
+    """Join lines, strip whitespace, then remove trailing page-number artifacts.
+
+    Page-corner numbers (e.g. "4", "10") only accumulate when there is
+    substantial preceding content (multiple lines), so we only strip when
+    len > 1.  This preserves short numeric MS answers like "11" or "66"
+    which are the entire single-line body of their table cell.
     """
-    Groups all sub-parts (e.g. 3(a), 3(a)(i)) under their parent question
-    number so that a single Ollama call classifies the entire scenario.
+    lines = list(lines)  # work on a copy
+    # Strip trailing blanks
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # Only strip trailing lone numerals when there is preceding content.
+    if len(lines) > 1:
+        while lines and re.match(r"^\d{1,2}$", lines[-1].strip()):
+            lines.pop()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines).strip()
 
-    Returns a list of dicts: {"main_q": "3", "text": "<combined markdown>"}
+
+def split_into_chunks(text: str, is_ms: bool = False, debug: bool = False) -> dict[str, str]:
     """
-    matches = list(QUESTION_BLOCK_RE.finditer(md_text))
-    if not matches:
-        return []
+    State-machine splitter. Accumulates lines under each Cambridge-numbered
+    label. Returns dict mapping label -> body text.
 
-    raw_blocks: list[dict] = []
-    for i, m in enumerate(matches):
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
-        label = m.group(1).strip()
-        raw_blocks.append({"label": label, "text": md_text[start:end].rstrip()})
+    is_ms=True enables label extraction from pipe-delimited mark-scheme tables.
+    is_ms=False (QP mode) preserves table rows as raw content instead, so data
+    tables (truth tables, trace tables) do not corrupt the label state machine.
+    """
+    chunks: dict[str, str] = {}
+    current_label: str = "__preamble__"
+    current_lines: list[str] = []
+    main_q = 0
+    part = ""
+    subpart = ""
+    in_fence = False  # True while inside a fenced code block (``` ... ```)
 
-    groups: dict[str, list[str]] = {}
-    order: list[str] = []
-    for block in raw_blocks:
-        main_match = MAIN_QNUM_RE.match(block["label"])
-        main_q = main_match.group(1) if main_match else block["label"]
-        if main_q not in groups:
-            groups[main_q] = []
-            order.append(main_q)
-        groups[main_q].append(block["text"])
+    def flush() -> None:
+        if current_label and current_lines:
+            body = _clean_body(current_lines)
+            if body and current_label != "__preamble__":
+                if current_label in chunks:
+                    chunks[current_label] += "\n" + body
+                else:
+                    chunks[current_label] = body
 
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+
+        # Skip margin warnings
+        if "DO NOT WRITE IN THIS MARGIN" in stripped:
+            continue
+
+        # Skip garbage watermark lines (high non-ASCII density)
+        if stripped and _is_garbage(stripped):
+            if debug:
+                print(f"  [GARBAGE] {stripped[:50]!r}")
+            continue
+
+        # Skip noise-only lines (HTML comments, MS headers, comma padding)
+        if stripped and _SKIP_LINE_RE.match(stripped):
+            if debug:
+                print(f"  [SKIP]    {stripped[:60]!r}")
+            continue
+
+        # --- Table rows ---
+        if stripped.startswith("|"):
+            if is_ms:
+                # MS mode: extract label from first cell of mark-scheme tables
+                cells = [c.strip() for c in stripped.split("|") if c.strip()]
+                # Skip separator rows like |---|---|
+                if len(cells) >= 2 and not re.match(r"^[-:]+$", cells[0]):
+                    q_val_clean = cells[0].replace(" ", "")
+                    if re.match(r"^\d+(?:\([a-z]+\))?(?:\([ivx]+\))?$", q_val_clean):
+                        # Guard: purely numeric labels must be 1–15 and not zero-padded.
+                        # Zero-padded values (01, 10, 20…) are pseudocode line numbers.
+                        pure_num = re.match(r"^(\d+)$", q_val_clean)
+                        if pure_num:
+                            n = int(pure_num.group(1))
+                            if q_val_clean[0] == "0" or not (1 <= n <= 15):
+                                # Pseudocode line number — treat as content, not a label
+                                current_lines.append(stripped)
+                                continue
+                        flush()
+                        current_label = q_val_clean
+                        current_lines = [cells[1].strip()]
+                        if debug:
+                            print(f"  [TABLE]   label={current_label!r} content={cells[1][:40]!r}")
+            else:
+                # QP mode: preserve table rows as content (truth tables, trace tables,
+                # database tables are part of the question, not label boundaries)
+                current_lines.append(stripped)
+                if debug:
+                    print(f"  [TABLE]   (QP content) {stripped[:60]!r}")
+            continue
+
+        # --- Blank lines ---
+        if not stripped:
+            current_lines.append("")
+            continue
+
+        # --- State machine ---
+        m_main      = MAIN_Q_RE.match(stripped)
+        m_main_part = MAIN_PART_RE.match(stripped)
+        m_part      = PART_RE.match(stripped)
+        m_sub       = SUBPART_RE.match(stripped)
+
+        if m_sub and main_q and part:
+            flush()
+            subpart = m_sub.group(1)
+            current_label = _label(main_q, part, subpart)
+            current_lines = [stripped[len(m_sub.group(0)):]]
+            if debug:
+                print(f"  [SUBPART] {current_label!r}")
+        elif m_part and main_q:
+            flush()
+            part = m_part.group(1)
+            subpart = ""
+            current_label = _label(main_q, part)
+            current_lines = [stripped[len(m_part.group(0)):]]
+            if debug:
+                print(f"  [PART]    {current_label!r}")
+        elif m_main_part:
+            # "- N (a) text" — question number and first sub-part on same line
+            flush()
+            main_q = int(m_main_part.group(1))
+            part = m_main_part.group(2)
+            subpart = ""
+            current_label = _label(main_q, part)
+            current_lines = [stripped[len(m_main_part.group(0)):]]
+            if debug:
+                print(f"  [MAIN+PT] {current_label!r}")
+        elif m_main:
+            flush()
+            main_q = int(m_main.group(1))
+            part = ""
+            subpart = ""
+            current_label = _label(main_q)
+            current_lines = [stripped[len(m_main.group(0)):]]
+            if debug:
+                print(f"  [MAIN]    {current_label!r}")
+        else:
+            current_lines.append(stripped)
+
+    flush()
+    return chunks
+
+
+def link_qa(qp_md: Path, ms_md: Path, debug: bool = False) -> list[dict]:
+    qp_chunks = split_into_chunks(qp_md.read_text(encoding="utf-8"), is_ms=False, debug=debug)
+    ms_chunks = split_into_chunks(ms_md.read_text(encoding="utf-8"), is_ms=True,  debug=debug)
+
+    all_labels = sorted(set(qp_chunks) | set(ms_chunks), key=_sort_key)
     return [
-        {"main_q": q, "text": "\n\n".join(groups[q])}
-        for q in order
+        {
+            "label": label,
+            "question": qp_chunks.get(label, ""),
+            "mark_scheme": ms_chunks.get(label, ""),
+        }
+        for label in all_labels
     ]
 
 
-def classify_chunk(chunk_text: str, syllabus_ref: str, model: str) -> dict:
+def validate_pairs(pairs: list[dict]) -> list[str]:
     """
-    Sends a Q+MS chunk to Ollama for topic classification.
-
-    Expected JSON response keys:
-        topic_folder  (str)   e.g. "Topic_03_Hardware"
-        breadcrumbs   (str)   e.g. "3.2 Input and output devices"
-        tags          (list)  3–5 keyword strings from the syllabus
-        total_marks   (int)   sum of all marks in this question group
+    Scan linked pairs for structural anomalies.
+    Returns a list of anomaly strings; empty list = clean.
     """
-    system_prompt = (
-        "You are a highly precise Expert Syllabus Routing Agent for IGCSE Computer "
-        "Science (0478). Your sole task is to analyse a past-paper Exam Question + "
-        "Mark Scheme chunk and classify it into its exact topic folder based on the "
-        "primary curriculum intent.\n\n"
-        "### COMPLETE TOPIC ROUTING MAP\n"
-        "Classify the question based on the core concept it tests. "
-        "Follow these rules and absolute constraints:\n\n"
-        "- Topic 01 (Data_Representation): Binary, denary, hexadecimal, overflow, "
-        "two's complement. Text/sound/image representation (ASCII, Unicode, pixels, "
-        "sample rate). Storage units (bits to exbibytes). Compression (lossy, "
-        "lossless, RLE).\n"
-        "- Topic 02 (Data_Transmission): Packets, packet switching, serial/parallel, "
-        "simplex/duplex, USB. Error detection (parity, checksum, echo, check digit, "
-        "ARQ). Encryption (symmetric, asymmetric). "
-        "*CONSTRAINT: Never route to Topic 03 just because it mentions hardware "
-        "like a router or cable.*\n"
-        "- Topic 03 (Hardware): CPU architecture, Von Neumann, Fetch-Decode-Execute, "
-        "registers, buses, cache, cores. Standard Input/Output devices (keyboards, "
-        "screens, printers, basic scanners). Storage mediums (HDD, SSD, optical). "
-        "MAC/IP addresses. "
-        "*CONSTRAINT: Do not route sensors, actuators, or automated systems here.*\n"
-        "- Topic 04 (Software): System vs. Application software, Operating Systems, "
-        "interrupts. High/low-level languages, assembly, compilers, interpreters, IDEs.\n"
-        "- Topic 05 (The_Internet_and_Its_Uses): WWW, URLs, HTTP/HTTPS, DNS, web "
-        "browsers, cookies. Digital currency/blockchain. Cybersecurity (malware, "
-        "phishing, hacking, firewalls, SSL).\n"
-        "- Topic 06 (Automated_and_Emerging_Technologies): Sensors (light, acoustic, "
-        "etc.), actuators, automated loops. Robotics. Artificial Intelligence "
-        "(expert systems, machine learning). "
-        "*CONSTRAINT: Must go here, NEVER Topic 03.*\n"
-        "- Topic 07 (Algorithm_design_and_problem_solving): Program development life "
-        "cycle, flowcharts, pseudocode logic. Linear search, bubble sort. "
-        "Validation/verification checks, test data types, trace tables.\n"
-        "- Topic 08 (Programming): Coding syntax/constructs: variables, constants, "
-        "arrays (1D/2D), loops (FOR, WHILE, REPEAT), IF/CASE statements. "
-        "String handling, functions, procedures. File handling (read/write lines).\n"
-        "- Topic 09 (Databases): Single-table databases, fields, records, primary "
-        "keys. SQL scripting (SELECT, FROM, WHERE, ORDER BY, SUM, COUNT).\n"
-        "- Topic 10 (Boolean_Logic): Logic gates (AND, OR, NOT, NAND, NOR, XOR), "
-        "truth tables, logic circuits, logic expressions.\n\n"
-        "### OUTPUT FORMAT\n"
-        "You must respond ONLY with a valid JSON object. "
-        "Do not include any conversational text or markdown fences.\n"
-        "{\n"
-        "  \"topic_folder\": \"<exact folder name from the list below>\",\n"
-        "  \"breadcrumbs\": \"X.X Sub-topic Name\",\n"
-        "  \"total_marks\": 0,\n"
-        "  \"tags\": [\"tag1\", \"tag2\", \"tag3\"]\n"
-        "}\n\n"
-        "EXACT VALID topic_folder VALUES (copy exactly, case-sensitive):\n"
-        "Topic_01_Data_Representation, Topic_02_Data_Transmission, Topic_03_Hardware, "
-        "Topic_04_Software, Topic_05_The_Internet_and_Its_Uses, "
-        "Topic_06_Automated_and_Emerging_Technologies, "
-        "Topic_07_Algorithm_design_and_problem_solving, Topic_08_Programming, "
-        "Topic_09_Databases, Topic_10_Boolean_Logic"
+    anomalies = []
+    label_set = {p["label"] for p in pairs}
+
+    # Check for preamble leakage
+    if "__preamble__" in label_set:
+        anomalies.append("PREAMBLE_LEAK: __preamble__ key found in output pairs")
+
+    for entry in pairs:
+        label = entry["label"]
+        q  = entry["question"].strip()
+        ms = entry["mark_scheme"].strip()
+
+        # A label is a leaf if no other label starts with label + "("
+        prefix = label + "("
+        is_leaf = not any(other.startswith(prefix) for other in label_set if other != label)
+
+        if is_leaf:
+            if q and not ms:
+                anomalies.append(f"MISSING_MS  [{label}]: question present, mark scheme empty")
+            if ms and not q:
+                anomalies.append(f"MISSING_Q   [{label}]: mark scheme present, question empty")
+
+    # Check sequential ordering of main question numbers
+    main_nums = sorted(
+        int(re.match(r"^(\d+)$", p["label"]).group(1))
+        for p in pairs
+        if re.match(r"^(\d+)$", p["label"])
     )
-    user_prompt = (
-        "Classify the following past-paper question group and return JSON only:\n\n"
-        f"{chunk_text[:CHUNK_CHAR_LIMIT]}"
+    for i in range(1, len(main_nums)):
+        if main_nums[i] != main_nums[i - 1] + 1:
+            anomalies.append(
+                f"SEQ_GAP: Q{main_nums[i-1]} followed by Q{main_nums[i]} "
+                f"(expected Q{main_nums[i-1]+1})"
+            )
+
+    return anomalies
+
+
+def find_pairs(staging_dir: Path) -> list[tuple[Path, Path, str]]:
+    qp_re = re.compile(r"^(.+)_qp_(\d+)\.md$", re.IGNORECASE)
+    ms_re = re.compile(r"^(.+)_ms_(\d+)\.md$", re.IGNORECASE)
+
+    qp_map: dict[str, Path] = {}
+    ms_map: dict[str, Path] = {}
+    for f in sorted(staging_dir.glob("*.md")):
+        m_qp = qp_re.match(f.name)
+        m_ms = ms_re.match(f.name)
+        if m_qp:
+            key = f"{m_qp.group(1)}__{m_qp.group(2)}"
+            qp_map[key] = f
+        elif m_ms:
+            key = f"{m_ms.group(1)}__{m_ms.group(2)}"
+            ms_map[key] = f
+
+    pairs = []
+    all_qp_keys = set(qp_map)
+    all_ms_keys = set(ms_map)
+
+    for key, qp_path in qp_map.items():
+        if key in ms_map:
+            paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp_path.stem, flags=re.IGNORECASE)
+            pairs.append((qp_path, ms_map[key], paper_code))
+        else:
+            print(f"WARNING: QP without matching MS skipped: {qp_path.name}")
+
+    for key in all_ms_keys - all_qp_keys:
+        print(f"WARNING: MS without matching QP skipped: {ms_map[key].name}")
+
+    return pairs
+
+
+def write_linked_json(pairs: list[dict], source: str, out_path: Path) -> None:
+    out_path.write_text(
+        json.dumps({"source": source, "pairs": pairs}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
-
-    response = ollama.chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-    raw = response["message"]["content"].strip()
-    raw = CODE_FENCE_RE.sub("", raw).strip()
-    try:
-        # Fast path: response starts with valid JSON
-        obj, _ = json.JSONDecoder().raw_decode(raw)
-        return obj
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback A: model wrapped JSON in prose — locate any {...} block
-    json_match = re.search(r'\{.*?\}', raw, re.DOTALL)
-    if json_match:
-        candidate = json_match.group()
-        # Fallback B: small models emit unquoted string values like
-        #   "topic_folder": Topic_03_Hardware  →  quote them
-        candidate = re.sub(
-            r'("(?:topic_folder|breadcrumbs)"\s*:\s*)([A-Za-z][^,\n\]}"]*)',
-            lambda m: m.group(1) + '"' + m.group(2).rstrip() + '"',
-            candidate,
-        )
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-
-    # Fallback C: regex-extract individual fields from whatever the model wrote
-    topic_m = re.search(r'"?topic_folder"?\s*:\s*"?([A-Za-z0-9_]+)"?', raw)
-    bc_m = re.search(r'"?breadcrumbs"?\s*:\s*"([^"]*)"', raw)
-    marks_m = re.search(r'"?total_marks"?\s*:\s*(\d+)', raw)
-    tags_m = re.search(r'"?tags"?\s*:\s*\[([^\]]*)\]', raw, re.DOTALL)
-    if topic_m:
-        return {
-            "topic_folder": topic_m.group(1).strip(),
-            "breadcrumbs": bc_m.group(1) if bc_m else "",
-            "total_marks": int(marks_m.group(1)) if marks_m else 0,
-            "tags": re.findall(r'"([^"]+)"', tags_m.group(1)) if tags_m else [],
-        }
-
-    raise json.JSONDecodeError("LLM response contained no parseable JSON", raw, 0)
-
-
-def make_frontmatter(meta: dict, source_file: str) -> str:
-    tags_yaml = json.dumps(meta.get("tags", []))
-    return (
-        "---\n"
-        f"breadcrumbs: \"{meta.get('breadcrumbs', '')}\"\n"
-        f"source_file: \"{source_file}\"\n"
-        f"total_marks: {int(meta.get('total_marks', 0))}\n"
-        f"tags: {tags_yaml}\n"
-        "---"
-    )
-
-
-def append_to_topic(topic_folder: str, frontmatter: str, chunk_text: str) -> Path:
-    topic_dir = KB_DIR / topic_folder
-    topic_dir.mkdir(parents=True, exist_ok=True)
-    out_file = topic_dir / "Past_Papers.md"
-
-    separator = "\n\n" if out_file.is_file() and out_file.stat().st_size > 0 else ""
-    with out_file.open("a", encoding="utf-8") as f:
-        f.write(f"{separator}{frontmatter}\n\n{chunk_text}\n")
-
-    return out_file
-
-
-def route_file(input_file: Path, syllabus_ref: str, model: str) -> tuple[int, int]:
-    """Routes one PastPaper_*.md file. Returns (routed, errors)."""
-    md_text = input_file.read_text(encoding="utf-8")
-    groups = split_into_main_question_groups(md_text)
-
-    if not groups:
-        print(f"  WARN: no '## Question' blocks in {input_file.name} — skipped.")
-        return 0, 0
-
-    print(f"\n[{input_file.name}] {len(groups)} question group(s) found.")
-    routed, errors = 0, 0
-    for group in groups:
-        q_label = f"Q{group['main_q']}"
-        try:
-            meta = classify_chunk(group["text"], syllabus_ref, model)
-        except json.JSONDecodeError as exc:
-            print(f"  SKIP {q_label}: LLM returned invalid JSON — {exc}", file=sys.stderr)
-            errors += 1
-            continue
-        except Exception as exc:
-            print(f"  SKIP {q_label}: Ollama error — {exc}", file=sys.stderr)
-            errors += 1
-            continue
-
-        topic_folder = meta.get("topic_folder", "").strip()
-        if not topic_folder:
-            print(f"  SKIP {q_label}: LLM returned empty topic_folder.", file=sys.stderr)
-            errors += 1
-            continue
-
-        if topic_folder not in VALID_TOPIC_FOLDERS:
-            # Case-insensitive fallback: accept the LLM's name if it matches a canonical
-            # folder when lowercased (catches e.g. wrong-case "emerging_technologies").
-            _lower = topic_folder.lower()
-            _match = next((f for f in VALID_TOPIC_FOLDERS if f.lower() == _lower), None)
-            if _match:
-                topic_folder = _match
-            else:
-                print(f"  SKIP {q_label}: LLM returned unrecognised topic_folder '{topic_folder}'.", file=sys.stderr)
-                errors += 1
-                continue
-
-        try:
-            frontmatter = make_frontmatter(meta, input_file.name)
-            out_path = append_to_topic(topic_folder, frontmatter, group["text"])
-        except Exception as exc:
-            print(f"  SKIP {q_label}: write error — {exc}", file=sys.stderr)
-            errors += 1
-            continue
-
-        print(f"  OK  {q_label} -> {out_path.relative_to(REPO_ROOT)}")
-        routed += 1
-
-    return routed, errors
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("qp_md", nargs="?", help="Path to QP Markdown file")
+    parser.add_argument("ms_md", nargs="?", help="Path to MS Markdown file")
+    parser.add_argument("--out", help="Output JSON path")
+    parser.add_argument("--batch", action="store_true", help="Batch processing mode")
+    parser.add_argument("--debug", action="store_true", help="Verbose state-machine trace")
+    args = parser.parse_args()
+
+    if args.batch:
+        pairs_found = find_pairs(STAGING_DIR)
+        if not pairs_found:
+            print(f"No valid QP/MS pairs found in: {STAGING_DIR}")
+            return 0
+
+        total_anomalies = 0
+        for qp_path, ms_path, paper_code in pairs_found:
+            linked = link_qa(qp_path, ms_path, debug=args.debug)
+            anomalies = validate_pairs(linked)
+            out = STAGING_DIR / f"{paper_code}_linked.json"
+            write_linked_json(linked, paper_code, out)
+            status = f"PASS ({len(linked)} pairs)" if not anomalies else f"WARN ({len(anomalies)} anomalies)"
+            print(f"[{status}] {out.name}")
+            for a in anomalies:
+                print(f"  ! {a}")
+            total_anomalies += len(anomalies)
+
+        if total_anomalies:
+            print(f"\nBatch complete — {total_anomalies} anomaly(s) require review.")
+            return 1
+        print(f"\nBatch complete — all pairs verified clean.")
+        return 0
+
+    if not args.qp_md or not args.ms_md:
+        parser.print_help()
+        return 1
+
+    qp_path = Path(args.qp_md)
+    ms_path = Path(args.ms_md)
+
+    if args.debug:
+        print(f"\n=== QP: {qp_path.name} ===")
+        split_into_chunks(qp_path.read_text(encoding="utf-8"), is_ms=False, debug=True)
+        print(f"\n=== MS: {ms_path.name} ===")
+        split_into_chunks(ms_path.read_text(encoding="utf-8"), is_ms=True, debug=True)
+
+    paper_code = re.sub(r"_qp_(\d+)$", r"_\1", qp_path.stem, flags=re.IGNORECASE)
+    out_path = Path(args.out) if args.out else STAGING_DIR / f"{paper_code}_linked.json"
+
+    linked = link_qa(qp_path, ms_path, debug=args.debug)
+    anomalies = validate_pairs(linked)
+    write_linked_json(linked, paper_code, out_path)
+
+    print(f"SUCCESS: {len(linked)} pairs -> {out_path.name}")
+    if anomalies:
+        print(f"VALIDATION — {len(anomalies)} anomaly(s):")
+        for a in anomalies:
+            print(f"  ! {a}")
+        return 1
+
+    print(f"VALIDATION — clean (0 anomalies)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+</file>
+
+<file path="02_parsers/route_hybrid.py">
+#!/usr/bin/env python3
+"""
+route_hybrid.py — FEAT-008: Hybrid Topic Router (Embeddings + LLM Metadata).
+
+For each Q&A pair in a _staging/*_linked.json file:
+  1. Embed the chunk text via Ollama (nomic-embed-text).
+  2. Compute cosine similarity against 10 hardcoded syllabus anchors (numpy).
+  3. Route to the highest-scoring Topic_XX_Name folder (math decision, no LLM).
+  4. Call llama3.2 ONLY to extract the YAML frontmatter (breadcrumbs + tags).
+  5. Append the chunk with RULE 10 YAML metadata to the topic's Past_Papers.md.
+
+Usage:
+    python route_hybrid.py <linked_json>
+    python route_hybrid.py --batch   (process all *_linked.json in _staging/)
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+import numpy as np
+import ollama
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+KB_DIR = REPO_ROOT / "03_knowledge_base"
+STAGING_DIR = KB_DIR / "_staging"
+
+DEFAULT_EMBED_MODEL = "nomic-embed-text"
+DEFAULT_LLM_MODEL   = "llama3.2"
+
+# ---------------------------------------------------------------------------
+# Syllabus anchor texts (one per Cambridge 0478 topic)
+# ---------------------------------------------------------------------------
+TOPIC_ANCHORS: dict[str, str] = {
+    "Topic_01_Data_Representation": (
+        "Number systems: binary, denary, hexadecimal conversion. Binary arithmetic: addition, "
+        "overflow, two's complement, sign-and-magnitude. A register in this context stores a "
+        "binary numeric value for arithmetic — NOT part of CPU architecture. Text encoding: "
+        "ASCII, Unicode. Sound: sampling, sample rate, bit depth. Images: pixels, colour depth, "
+        "resolution. Compression: lossy, lossless, run-length encoding."
+    ),
+    "Topic_02_Data_Transmission": (
+        "Data transmission modes: serial vs parallel, simplex, half-duplex, full-duplex. "
+        "Physical connectors: USB, Bluetooth. Error detection and correction: parity bits, "
+        "checksums, check digits, automatic repeat request (ARQ). Packet switching: packets, "
+        "headers, trailers, router paths, IP addresses for routing. Encryption and decryption: "
+        "Caesar cipher, Vernam cipher, symmetric key, public/private key."
+    ),
+    "Topic_03_Hardware": (
+        "CPU hardware internals: Von Neumann architecture, fetch-decode-execute (FDE) cycle, "
+        "arithmetic/logic unit (ALU), control unit, registers as CPU components (MAR, MDR, PC, "
+        "accumulator, CIR). System buses: address bus, data bus, control bus. Primary memory: "
+        "RAM, ROM, cache. Secondary storage devices: magnetic (hard disk), optical (CD, DVD, "
+        "Blu-ray), solid-state (SSD, flash). Input devices: keyboard, mouse, microphone, "
+        "scanner, camera. Output devices: monitor, printer, speaker, actuator. "
+        "Does NOT include binary number conversion or binary arithmetic questions. "
+        "Does NOT include data transmission modes (serial, parallel, simplex, half-duplex, "
+        "full-duplex) — those are Topic 02."
+    ),
+    "Topic_04_Software": (
+        "System software vs application software. Operating system functions: memory management, "
+        "multitasking, scheduling, interrupt handling, device driver management, user interface "
+        "(GUI/CLI). High-level vs low-level languages: machine code, assembly language. "
+        "Translators: compiler (whole-program, produces executable), interpreter (line-by-line, "
+        "stops on error), assembler. Software utilities, open-source vs proprietary licensing."
+    ),
+    "Topic_05_The_Internet_and_Its_Uses": (
+        "Internet and World Wide Web: URL, web address, website parts (domain, path, protocol), "
+        "HTTP, HTTPS, HTML, DNS resolution, IP addresses, MAC addresses, web hosting, cookies, "
+        "e-commerce. Cybersecurity threats: phishing, pharming, malware (virus, worm, trojan horse, "
+        "spyware, ransomware), brute-force attack, SQL injection, DDoS. Countermeasures: firewall, "
+        "proxy server, antivirus software, two-factor authentication, biometrics, SSL/TLS encryption. "
+        "Digital currency, online banking security, data privacy legislation."
+    ),
+    "Topic_06_Automated_and_Emerging_Technologies": (
+        "Automated systems: sensors, microprocessors, actuators, real-time feedback control loops. "
+        "Robotics: industrial robots, autonomous vehicles, advantages and limitations. Artificial "
+        "Intelligence: machine learning, neural networks, expert systems, natural language "
+        "processing. Emerging technology: quantum computing, biometrics, augmented/virtual reality. "
+        "Does NOT cover networking protocols, databases, or programming code syntax."
+    ),
+    "Topic_07_Algorithm_design_and_problem_solving": (
+        "Algorithm design: program development life cycle (PDLC) stages — analysis, design, "
+        "coding, testing, evaluation. Flowchart symbols: start/end (oval), process (rectangle), "
+        "decision (diamond), input/output (parallelogram). Pseudocode: IF/ELSE/THEN/ENDIF, "
+        "WHILE/ENDWHILE, FOR/NEXT, arrays. Standard algorithms: linear search, binary search, "
+        "bubble sort, merge sort. Trace tables are used HERE to dry-run and trace pseudocode or "
+        "algorithm execution step-by-step — a trace table is an algorithm testing tool, NOT a "
+        "database construct. Test data: normal, boundary, erroneous. Validation vs verification."
+    ),
+    "Topic_08_Programming": (
+        "Programming code syntax and constructs: variables, constants, assignment operator. "
+        "Data types: integer, real/float, boolean, character, string. Arrays (1D and 2D). "
+        "Control flow: IF/ELSE, CASE/OTHERWISE, FOR loops, WHILE loops, REPEAT-UNTIL. "
+        "String operations: concatenation, substring, string length, upper/lower case. "
+        "Subroutines: procedures, functions, parameters, return values, local vs global scope. "
+        "File handling: OPEN, READ, WRITE, CLOSE, EOF. Recursion."
+    ),
+    "Topic_09_Databases": (
+        "Relational databases: tables of records, fields (columns), records (rows), primary key, "
+        "foreign key, data types, relationships between tables. SQL queries: SELECT, FROM, WHERE, "
+        "AND/OR, ORDER BY, GROUP BY, COUNT, SUM, INNER JOIN, linking tables by key fields. "
+        "Database design: entity-relationship diagrams, normalisation. "
+        "A database TABLE is a persistent store of records — NOT an algorithm trace table "
+        "or a pseudocode array. Does NOT include Boolean logic or truth tables for gates. "
+        "Does NOT include URLs, web addresses, or website structure — those are Topic 05."
+    ),
+    "Topic_10_Boolean_Logic": (
+        "Boolean logic gates and their truth tables: AND gate, OR gate, NOT gate (inverter), "
+        "NAND gate, NOR gate, XOR gate. A truth table here lists all input combinations (0/1) "
+        "and gate output — this is a LOGIC CIRCUIT tool, NOT a database table or SQL result set. "
+        "Boolean expressions, De Morgan's laws, simplification. Logic circuit diagrams combining "
+        "multiple gates. Half adder, full adder circuits."
+    ),
+}
+
+VALID_TOPICS: frozenset[str] = frozenset(TOPIC_ANCHORS.keys())
+
+# ---------------------------------------------------------------------------
+# Embedding helpers
+# ---------------------------------------------------------------------------
+
+def _embed(text: str, model: str) -> np.ndarray:
+    """Return a float32 vector for text using Ollama."""
+    try:
+        # ollama >= 0.3 API
+        resp = ollama.embed(model=model, input=text)
+        vec = resp.embeddings[0]
+    except AttributeError:
+        # fallback for older ollama library
+        resp = ollama.embeddings(model=model, prompt=text)
+        vec = resp["embedding"]
+    return np.array(vec, dtype=np.float32)
+
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+
+def build_anchor_embeddings(embed_model: str) -> dict[str, np.ndarray]:
+    """Pre-compute embeddings for all 10 topic anchors (once per run)."""
+    print(f"Building anchor embeddings with '{embed_model}' (once per run)...")
+    result = {}
+    for topic, anchor_text in TOPIC_ANCHORS.items():
+        result[topic] = _embed(anchor_text, embed_model)
+        print(f"  embedded: {topic}")
+    return result
+
+
+def route_topic(chunk_text: str, anchor_embeddings: dict[str, np.ndarray], embed_model: str) -> str:
+    """Return the topic folder name with the highest cosine similarity to the chunk."""
+    chunk_vec = _embed(chunk_text, embed_model)
+    return max(anchor_embeddings, key=lambda t: _cosine(chunk_vec, anchor_embeddings[t]))
+
+
+# ---------------------------------------------------------------------------
+# Python-driven YAML construction (Phase 3 hardening)
+# ---------------------------------------------------------------------------
+
+# Hardcoded breadcrumbs per topic — Python dictates, LLM never touches these.
+TOPIC_BREADCRUMBS: dict[str, str] = {
+    "Topic_01_Data_Representation":              "Topic 01: Data Representation",
+    "Topic_02_Data_Transmission":                "Topic 02: Data Transmission",
+    "Topic_03_Hardware":                         "Topic 03: Hardware",
+    "Topic_04_Software":                         "Topic 04: Software",
+    "Topic_05_The_Internet_and_Its_Uses":        "Topic 05: The Internet and Its Uses",
+    "Topic_06_Automated_and_Emerging_Technologies": "Topic 06: Automated and Emerging Technologies",
+    "Topic_07_Algorithm_design_and_problem_solving": "Topic 07: Algorithm Design and Problem Solving",
+    "Topic_08_Programming":                      "Topic 08: Programming",
+    "Topic_09_Databases":                        "Topic 09: Databases",
+    "Topic_10_Boolean_Logic":                    "Topic 10: Boolean Logic",
+}
+
+# Regex to extract mark values from [N] or [N marks] / [N mark] tokens.
+_MARKS_RE = re.compile(r'\[(\d+)\s*(?:marks?)?\]', re.IGNORECASE)
+
+
+def extract_total_marks(text: str) -> int:
+    """Sum all [N] / [N marks] markers in the Q&A text. Pure Python, no LLM."""
+    return sum(int(m) for m in _MARKS_RE.findall(text))
+
+
+def extract_tags_from_llm(chunk_text: str, llm_model: str) -> list[str]:
+    """Ask the LLM for 3–5 comma-separated keywords only. Returns a clean list."""
+    prompt = (
+        "Read this computer science question. "
+        "Output ONLY a single comma-separated list of 3 to 5 keywords. "
+        "Do not use markdown. Do not write sentences."
+    )
+    try:
+        resp = ollama.chat(
+            model=llm_model,
+            messages=[{"role": "user", "content": f"{prompt}\n\n{chunk_text}"}],
+        )
+        raw = resp["message"]["content"].strip()
+        tags = [t.strip().strip("\"'") for t in raw.split(",") if t.strip()]
+        tags = [t for t in tags if t][:5]   # cap at 5
+        if len(tags) < 3:
+            tags += ["computer science"] * (3 - len(tags))
+        return tags
+    except Exception as exc:
+        print(f"  WARN: LLM tags call failed ({exc}); using stub.", file=sys.stderr)
+        return ["computer science", "IGCSE", "0478"]
+
+
+def build_yaml_metadata(
+    topic_folder: str,
+    source_file: str,
+    total_marks: int,
+    tags: list[str],
+) -> str:
+    """Construct RULE 10-compliant YAML using an f-string. No LLM involved."""
+    breadcrumbs = TOPIC_BREADCRUMBS.get(topic_folder, topic_folder)
+    tags_yaml = "\n".join(f'  - "{t}"' for t in tags)
+    return (
+        f'breadcrumbs: "{breadcrumbs}"\n'
+        f'source_file: "{source_file}"\n'
+        f'total_marks: {total_marks}\n'
+        f'tags:\n'
+        f'{tags_yaml}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Knowledge-base writer
+# ---------------------------------------------------------------------------
+
+def append_to_past_papers(topic_folder: str, yaml_meta: str, pair: dict) -> None:
+    """Append one Q&A block with RULE 10 frontmatter to the topic's Past_Papers.md."""
+    topic_dir = KB_DIR / topic_folder
+    topic_dir.mkdir(parents=True, exist_ok=True)
+    out_path = topic_dir / "Past_Papers.md"
+
+    label       = pair["label"]
+    question    = pair["question"].strip()
+    mark_scheme = pair["mark_scheme"].strip()
+
+    block = (
+        f"\n---\n"
+        f"{yaml_meta}\n"
+        f"---\n\n"
+        f"**Question {label}**\n\n"
+        f"{question}\n\n"
+        f"**Mark Scheme**\n\n"
+        f"{mark_scheme}\n"
+    )
+
+    with out_path.open("a", encoding="utf-8") as fh:
+        fh.write(block)
+
+
+# ---------------------------------------------------------------------------
+# Processing
+# ---------------------------------------------------------------------------
+
+# Minimum question length below which we prepend parent context for embedding
+_PREAMBLE_SHORT_THRESHOLD = 60
+
+
+def _parent_label(label: str) -> str | None:
+    """Return the immediate parent label, or None if already at the root level."""
+    if "(" not in label:
+        return None
+    return label[: label.rfind("(")]
+
+
+def _build_embed_text(
+    label: str,
+    question: str,
+    mark_scheme: str,
+    question_map: dict[str, str],
+) -> str:
+    """
+    Build the text string to embed for routing.
+
+    If the question text is very short (e.g. just a number like "11"), its
+    embedding vector will be dominated by noise.  In that case we walk up the
+    label hierarchy to find the nearest ancestor whose question text is long
+    enough to provide meaningful topic context, then prepend it.
+
+    The prepended context is ONLY used for the cosine-similarity calculation —
+    it is never written to the knowledge base.
+    """
+    base = f"Question {label}:\n{question}\n\nMark Scheme:\n{mark_scheme}"
+
+    if len(question) >= _PREAMBLE_SHORT_THRESHOLD:
+        return base
+
+    # Walk up: 1(a)(i) -> 1(a) -> 1
+    parent = _parent_label(label)
+    while parent is not None:
+        parent_q = question_map.get(parent, "").strip()
+        if len(parent_q) >= _PREAMBLE_SHORT_THRESHOLD:
+            return f"Context: {parent_q}\n\n{base}"
+        parent = _parent_label(parent)
+
+    return base  # no useful ancestor found; embed as-is
+
+
+def process_linked_json(
+    json_path: Path,
+    anchor_embeddings: dict[str, np.ndarray],
+    embed_model: str,
+    llm_model: str,
+) -> tuple[int, int]:
+    """Route all Q&A pairs in one linked JSON. Returns (routed, skipped)."""
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    source_file = data.get("source", json_path.stem)
+    pairs = data.get("pairs", [])
+
+    # Build label → question text map for preamble context injection (Phase 3).
+    # Includes preamble-only rows (empty mark_scheme) because their text is
+    # the scenario context we need — they are NOT written to the KB.
+    question_map: dict[str, str] = {
+        p.get("label", ""): p.get("question", "").strip()
+        for p in pairs
+        if p.get("question", "").strip()
+    }
+
+    routed = skipped = 0
+    for pair in pairs:
+        label       = pair.get("label", "?")
+        question    = pair.get("question", "").strip()
+        mark_scheme = pair.get("mark_scheme", "").strip()
+
+        if not mark_scheme.strip() or not question.strip():
+            # Preamble/context row (no answer) or artifact (no question) — skip
+            skipped += 1
+            continue
+
+        # Build embedding text: injects parent context for short sub-questions.
+        # This enriched string is used ONLY for cosine routing — not stored.
+        embed_text = _build_embed_text(label, question, mark_scheme, question_map)
+
+        # The canonical chunk text (written to KB) contains only the pair itself.
+        chunk_text = f"Question {label}:\n{question}\n\nMark Scheme:\n{mark_scheme}"
+
+        # Step 1 — embed + route (math, deterministic)
+        topic_folder = route_topic(embed_text, anchor_embeddings, embed_model)
+        print(f"  {label} -> {topic_folder}")
+
+        # Step 2 — Python extracts marks + breadcrumbs; LLM supplies keywords only.
+        total_marks = extract_total_marks(chunk_text)
+        tags        = extract_tags_from_llm(chunk_text, llm_model)
+        yaml_meta   = build_yaml_metadata(topic_folder, source_file, total_marks, tags)
+
+        # Step 3 — append to KB
+        append_to_past_papers(topic_folder, yaml_meta, pair)
+        routed += 1
+
+    return routed, skipped
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("linked_json", nargs="?", help="Path to a *_linked.json file")
     parser.add_argument(
-        "input_files", nargs="*", type=Path,
-        help="PastPaper_*.md file(s) to route. Omit to batch-process ALL "
-             "PastPaper_*.md files found in 03_knowledge_base/."
+        "--batch",
+        action="store_true",
+        help="Process all *_linked.json files in _staging/ in one pass.",
     )
     parser.add_argument(
-        "--model", default=DEFAULT_MODEL,
-        help=f"Ollama model name (default: {DEFAULT_MODEL})"
+        "--embed-model",
+        default=DEFAULT_EMBED_MODEL,
+        help=f"Ollama embedding model (default: {DEFAULT_EMBED_MODEL})",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_LLM_MODEL,
+        help=f"Ollama LLM model for YAML metadata (default: {DEFAULT_LLM_MODEL})",
     )
     args = parser.parse_args()
 
-    # Resolve target files: explicit list OR auto-glob from KB root
-    if args.input_files:
-        files: list[Path] = [f.resolve() for f in args.input_files]
-        missing = [f for f in files if not f.is_file()]
-        if missing:
-            for f in missing:
-                print(f"FAIL: {f} does not exist.", file=sys.stderr)
-            return 1
-    else:
-        files = sorted(KB_DIR.glob("PastPaper_*.md"))
-        if not files:
-            print(f"FAIL: no PastPaper_*.md files found in {KB_DIR}.", file=sys.stderr)
-            return 1
-        print(f"Batch mode: found {len(files)} PastPaper_*.md file(s) in {KB_DIR.relative_to(REPO_ROOT)}")
+    anchor_embeddings = build_anchor_embeddings(args.embed_model)
 
-    try:
-        syllabus_ref = load_syllabus_reference()
-    except FileNotFoundError as exc:
-        print(f"FAIL: {exc}", file=sys.stderr)
+    if args.batch:
+        json_files = sorted(STAGING_DIR.glob("*_linked.json"))
+        if not json_files:
+            print("No *_linked.json files found in _staging/")
+            return 0
+        total_routed = total_skipped = 0
+        for jf in json_files:
+            print(f"\nProcessing: {jf.name}")
+            r, s = process_linked_json(jf, anchor_embeddings, args.embed_model, args.model)
+            total_routed  += r
+            total_skipped += s
+        print(f"\nDone.  Routed: {total_routed}  |  Skipped: {total_skipped}")
+        return 0
+
+    if not args.linked_json:
+        parser.print_help()
         return 1
 
-    print(f"Model: {args.model}\n")
+    json_path = Path(args.linked_json)
+    if not json_path.is_file():
+        print(f"ERROR: File not found: {json_path}", file=sys.stderr)
+        return 1
 
-    total_routed, total_errors = 0, 0
-    for f in files:
-        r, e = route_file(f, syllabus_ref, args.model)
-        total_routed += r
-        total_errors += e
-
-    status = f"{total_errors} error(s)" if total_errors else "all OK"
-    print(f"\n{'='*60}")
-    print(f"Done. {total_routed} group(s) routed, {total_errors} skipped ({status}).")
-    return 1 if total_errors else 0
+    routed, skipped = process_linked_json(
+        json_path, anchor_embeddings, args.embed_model, args.model
+    )
+    print(f"\nDone.  Routed: {routed}  |  Skipped: {skipped}")
+    return 0
 
 
 if __name__ == "__main__":
@@ -4211,106 +3765,10 @@ Use this box for a marker's worked thought process alongside a mark scheme entry
 \end{document}
 </file>
 
-<file path="04_templates/igcse_preamble.tex">
-% IGCSE 0478 shared preamble -- structure only, NO topic content.
-% \input this file as the FIRST line of every 05_output/*.tex (it includes
-% \documentclass, so it must come before anything else). Defines the six
-% custom environments every generated document must use exclusively, plus
-% the SenpaiCorner house style (watermark, footer, section styling, font).
-% See CLAUDE.md "Strict Separation of Structure and Content".
-\documentclass[11pt]{article}
-
-\usepackage[a4paper, margin=2cm]{geometry}
-\usepackage{xcolor}
-\usepackage{tcolorbox}
-\usepackage{enumitem}
-\usepackage{amsmath}
-\usepackage{booktabs}
-\usepackage{longtable}
-\usepackage{tikz}
-\usetikzlibrary{trees, arrows.meta, positioning, shapes.geometric, fit, calc, backgrounds}
-\usepackage{hyperref}
-\hypersetup{colorlinks=true, urlcolor=blue}
-\usepackage{titlesec}
-\usepackage{helvet}
-\renewcommand{\familydefault}{\sfdefault}
-
-\tcbuselibrary{skins, breakable}
-
-% --- SenpaiCorner house style -----------------------------------------------
-\usepackage{draftwatermark}
-\SetWatermarkText{\shortstack{SenpaiCorner\\Mr. Wei}}
-\SetWatermarkScale{0.6}
-\SetWatermarkColor[gray]{0.92}
-
-\usepackage{fancyhdr}
-\pagestyle{fancy}
-\fancyhead{}
-\renewcommand{\headrulewidth}{0pt}
-\fancyfoot[C]{\thepage}
-\fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}
-% \maketitle forces the "plain" pagestyle on the title page, which fancyhdr
-% defines as bare page-number-only -- without redefining it too, the title
-% page would silently lose the footer link.
-\fancypagestyle{plain}{%
-  \fancyhf{}%
-  \renewcommand{\headrulewidth}{0pt}%
-  \fancyfoot[C]{\thepage}%
-  \fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}%
-}
-
-% Section styling applies to starred (unnumbered) commands too -- every
-% generated document uses \section*/\subsection*, never auto-numbered ones,
-% since the syllabus's own numbering (e.g. "1.1 Number systems") is typed
-% directly into the heading text and would otherwise double up.
-\titleformat{\section}{\normalfont\Large\bfseries\color{blue!50!black}}{\thesection.}{0.5em}{}[\titlerule]
-\titleformat{\subsection}{\normalfont\large\bfseries\color{blue!40!black}}{\thesubsection}{0.5em}{}
-
-% stratbox: an exam strategy / technique tip.
-\newtcolorbox{stratbox}[1][Exam Strategy]{
-  enhanced, breakable, colback=blue!5, colframe=blue!60!black,
-  fonttitle=\bfseries, title=#1
-}
-
-% critbox: a common mistake / misconception warning.
-\newtcolorbox{critbox}[1][Common Mistake]{
-  enhanced, breakable, colback=red!5, colframe=red!60!black,
-  fonttitle=\bfseries, title=#1
-}
-
-% scenario: an applied exam-style scenario or worked example.
-\newtcolorbox{scenario}[1][Scenario]{
-  enhanced, breakable, colback=green!5, colframe=green!40!black,
-  fonttitle=\bfseries, title=#1
-}
-
-% learningoutcomes: the syllabus learning objectives a document/week covers.
-\newtcolorbox{learningoutcomes}[1][Learning Objectives]{
-  enhanced, breakable, colback=purple!5, colframe=purple!60!black,
-  fonttitle=\bfseries, title=#1
-}
-
-% errortrap: a specific, narrow error a student is likely to make in their
-% own working (distinct from critbox's broader conceptual misconception --
-% kept in orange, not critbox's red, so the two read as visually distinct).
-\newtcolorbox{errortrap}[1][Common Error Trap]{
-  enhanced, breakable, colback=orange!5, colframe=orange!70!black,
-  fonttitle=\bfseries, title=#1
-}
-
-% modelans: a worked model answer / marker's thought process for a mark scheme.
-\newtcolorbox{modelans}[1][Model Answer]{
-  enhanced, breakable, colback=gray!5, colframe=gray!60!black,
-  fonttitle=\bfseries, title=#1
-}
-</file>
-
 <file path="compile.sh">
 #!/usr/bin/env bash
 # Verification script: compiles one .tex file from 05_output/ with pdflatex
-# and reports a clear PASS/FAIL. Usage:
-#   ./compile.sh Topic_01_Data_Representation.tex
-#   ./compile.sh 05_output/Topic_01_Data_Representation.tex
+# and reports a clear PASS/FAIL. Cleans up all compilation artifacts on success.
 
 set -uo pipefail
 
@@ -4330,8 +3788,6 @@ if [ ! -f "$TEX_PATH" ]; then
   exit 1
 fi
 
-# Fresh TinyTeX installs land here on Windows; fall back to it if a
-# shell restart hasn't picked up the PATH update yet (see init.sh).
 TINYTEX_BIN="$HOME/AppData/Roaming/TinyTeX/bin/windows"
 if [ -d "$TINYTEX_BIN" ]; then
   PATH="$PATH:$TINYTEX_BIN"
@@ -4342,18 +3798,24 @@ if ! command -v pdflatex >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Compiling $TEX_BASENAME inside $OUTPUT_DIR"
+echo "==> Verifying LaTeX syntax for $TEX_BASENAME..."
 cd "$OUTPUT_DIR"
 
-LOG_NAME="${TEX_BASENAME%.tex}.log"
+BASE_NAME="${TEX_BASENAME%.tex}"
+LOG_NAME="$BASE_NAME.log"
+STDOUT_NAME="$LOG_NAME.stdout"
 
-if pdflatex -interaction=nonstopmode -halt-on-error "$TEX_BASENAME" > "$LOG_NAME.stdout" 2>&1; then
-  echo "PASS: ${TEX_BASENAME%.tex}.pdf compiled with zero errors."
-  echo "      Log: $OUTPUT_DIR/$LOG_NAME"
+# Run compilation pass quietly
+if pdflatex -interaction=nonstopmode -halt-on-error "$TEX_BASENAME" > "$STDOUT_NAME" 2>&1; then
+  echo "PASS: Syntax is perfectly valid."
+  echo "==> Cleaning up verification clutter from 05_output/..."
+  
+  # Automatically vaporize all auxiliary files and the byproduct PDF on success
+  rm -f "$BASE_NAME.aux" "$LOG_NAME" "$BASE_NAME.out" "$BASE_NAME.pdf" "$STDOUT_NAME" "$BASE_NAME.toc" "$BASE_NAME.synctex.gz"
   exit 0
 else
   echo "FAIL: pdflatex reported errors compiling $TEX_BASENAME." >&2
-  echo "      See $OUTPUT_DIR/$LOG_NAME and $OUTPUT_DIR/$LOG_NAME.stdout for details." >&2
+  echo "      Logs preserved for debugging: $OUTPUT_DIR/$LOG_NAME and $STDOUT_NAME" >&2
   grep -m 5 '^!' "$LOG_NAME" >&2 2>/dev/null || true
   exit 1
 fi
@@ -4611,121 +4073,126 @@ fi
 exit 0
 </file>
 
-<file path="claude-progress.md">
-# Progress Log
+<file path="04_templates/igcse_preamble.tex">
+% IGCSE 0478 shared preamble -- structure only, NO topic content.
+% Paste the contents of the preamble in the start of every 05_output/*.tex (it includes
+% \documentclass, so it must come before anything else). Defines the six
+% custom environments every generated document must use exclusively, plus
+% the SenpaiCorner house style (watermark, footer, section styling, font).
+% See CLAUDE.md "Strict Separation of Structure and Content".
+\documentclass[11pt]{article}
 
-## Current Verified State
+\usepackage[a4paper, margin=2cm]{geometry}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tikz}
+\usetikzlibrary{trees, arrows.meta, positioning, shapes.geometric, fit, calc, backgrounds}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, urlcolor=blue}
+\usepackage{titlesec}
+\usepackage{helvet}
+\renewcommand{\familydefault}{\sfdefault}
 
-- Repository root: `_project/` (this repo)
-- Standard startup path: `./init.sh`
-- Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
-- Current highest-priority unfinished feature: `FEAT-003` (High-Fidelity LaTeX Compiler) is `in_progress` -- single-topic stitching is verified (Topics 1 and 2 both compile clean via `./compile.sh`), but multi-topic/multi-source stitching (e.g. a topic's notes + its linked past-paper Markdown into one worksheet+mark-scheme document) has not yet been attempted; that's the active gap. `FEAT-001`, `FEAT-002`, `FEAT-004`, `FEAT-005` are all `passing`.
-- KB structure (as of Session 008): 10 canonical `Topic_XX_Name/` folders under `03_knowledge_base/`, each with `Syllabus.md`; Topics 1-6 also have `Theory.md` (class notes); all 10 have `Past_Papers.md` (routed via Ollama). Flat `PastPaper_*.md` source files deleted. 35 past papers parsed total (2020-2025, Papers 1 and 2).
-- Current blocker: none. `pdflatex` (TinyTeX) and `python3` (via `py`) are installed. `DEFAULT_MODEL` in router/digest set to `llama3.2:latest`. State file: 63 entries (21 notes + 42 papers, covering 2020–2025 including all March/Summer/Winter 2024 variants). Content gap (not a blocker): Topics 7–10 have no class-notes raw sources; `digest_new_material.py` will report zero notes files for them until sources are added. Bug fixed: `digest_new_material.py` `--dry-run` mode previously wrote to the state file even though subprocesses were skipped; guarded all `mark_processed`/`save_state` calls with `if not dry_run`.
+\tcbuselibrary{skins, breakable}
 
-## Session Log
+% --- SenpaiCorner house style -----------------------------------------------
+\usepackage{draftwatermark}
+\SetWatermarkText{\shortstack{SenpaiCorner\\Mr. Wei}}
+\SetWatermarkScale{0.6}
+\SetWatermarkColor[gray]{0.92}
 
-**Past Context (Sessions 001-009, compressed 2026-06-26):** Harness baseline established (`CLAUDE.md`, original 9-feature `feature_list.json`, `init.sh`, `compile.sh`, checklists, docs; real raw source material migrated into `01_raw_sources/`). Built the end-to-end vertical slice for Topic 1: installed TinyTeX/tcolorbox/booktabs, wrote `parse_class_notes_pdf.py`, authored `igcse_preamble.tex`/`igcse_blueprint.tex` (stratbox/critbox/scenario via tcolorbox) and `Topic_01_Data_Representation.tex`, all compiling clean. Generalized parsing: `parse_class_notes.py` gained a real DOCX path (structural signals -- bold-run headings, Word `<w:numPr>` bullets, true document order via `iter_inner_content()`), with two real heading-detection bugs found and fixed (a missing-whitespace numbering gap on single-digit subsection headings, and a length-cap rejecting a genuinely-bold 86-char heading); ran across Topics 2-6, all reviewed clean. Wrote `parse_past_paper.py` from scratch for QP/MS linking, then hardened it across a full pass over all complete 2025 papers (Paper 1 and Paper 2) plus the 2020 gold standard: replaced hardcoded x-position column thresholds with `pdfplumber.find_tables()` (column-position-independent), removed a false-positive boilerplate filter that dropped bare-numeric question labels inside tables, guarded against zero-padded pseudocode line numbers hijacking the main-question counter, added watermark/cid-glyph filtering, fixed chained inline sub-part markers being swallowed into their parent's text, fixed an `is_stem_only` false negative for stems ending in `)`, and fixed multi-page mark-scheme answers overwriting each other across page breaks (root-caused to nested sub-tables lacking a real "Question" header colliding with genuine question numbers; fixed by requiring that header to count a table as genuine). End state: zero "Unmatched Mark Scheme Entries" across all 13 parsed past-paper files, Paper 2 match rate improved from 16% to 70-92%. Found `04_templates/latex_template.sty` was an unfamiliar file embedding hardcoded topic content and conflicting box environments; user confirmed it as a personal branding reference, so its look (watermark, footer, section styling, sans-serif font) was merged into `igcse_preamble.tex` and the original deleted -- while verifying that merge, found and fixed a real fancyhdr bug where `\maketitle`'s internal `\thispagestyle{plain}` call was silently dropping the custom footer on every title page. Ran the formal `templates-001` verification (`./compile.sh igcse_blueprint.tex` -> PASS) that had previously only been checked via direct `pdflatex`. `knowledge_base-001` (6 of 10 topics parsed; Topics 7-10 have no raw sources yet) remained the only `blocked` feature throughout.
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhead{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\thepage}
+\fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}
+% \maketitle forces the "plain" pagestyle on the title page, which fancyhdr
+% defines as bare page-number-only -- without redefining it too, the title
+% page would silently lose the footer link.
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \fancyfoot[C]{\thepage}%
+  \fancyfoot[R]{\small\textcolor{blue}{\href{https://www.senpaicorner.com}{senpaicorner.com}}}%
+}
 
-*Sessions 005-009 compressed: Architecture rewrite (Living Database/Dynamic Assembly/Syllabus Anchor principles, RULE 7/8/9/10 added to CLAUDE.md). feature_list.json refactored from 9 topic-tied features to 4 engine-functionality features (FEAT-001–005). Topic_02 .tex authored and compiled PASS. igcse_preamble.tex gained learningoutcomes/errortrap/modelans boxes + longtable/tikz. Weekly tutoring skeleton added to igcse_blueprint.tex. KB folder-per-topic normalization (Theory.md/Past_Papers.md/Syllabus.md per topic). split_syllabus.py and route_questions_ollama.py (FEAT-005) written. 35 past papers parsed (2020–2025). merge_theory_ollama.py and digest_new_material.py (SHA-256 state orchestrator) written. Study plan 00_syllabus/6_month_zero_to_hero_plan.md added.*
+% Section styling applies to starred (unnumbered) commands too -- every
+% generated document uses \section*/\subsection*, never auto-numbered ones,
+% since the syllabus's own numbering (e.g. "1.1 Number systems") is typed
+% directly into the heading text and would otherwise double up.
+\titleformat{\section}{\normalfont\Large\bfseries\color{blue!50!black}}{\thesection.}{0.5em}{}[\titlerule]
+\titleformat{\subsection}{\normalfont\large\bfseries\color{blue!40!black}}{\thesubsection}{0.5em}{}
 
-### Session 005
+% stratbox: an exam strategy / technique tip.
+\newtcolorbox{stratbox}[1][Exam Strategy]{
+  enhanced, breakable, colback=blue!5, colframe=blue!60!black,
+  fonttitle=\bfseries, title=#1
+}
 
-- Date: 2026-06-25
-- Goal: System update defining core architecture (Living Database, Dynamic Assembly, Syllabus Anchor; `docs/ARCHITECTURE.md` + `CLAUDE.md` RULE 7/8), then "next feature" -> `generation-001`.
-- Completed (architecture update):
-  - Rewrote `docs/ARCHITECTURE.md`: `00_syllabus/`/`01_raw_sources/` are the only true read-only layers now; `03_knowledge_base/` and `05_output/` are living/structurally-agnostic working layers. Added the three named principles as their own subsections.
-  - Updated `CLAUDE.md`: directory-boundaries section now reflects the agent can write into `03_knowledge_base/` directly; added `### ARCHITECTURE & DATA FLOW ###` with RULE 7 (KB Refinement) and RULE 8 (Syllabus Absolute Authority).
-  - Caught and fixed a real contradiction in `docs/PIPELINE.md`: it warned against hand-editing the knowledge base ("will silently clobber it"), directly conflicting with the new Living Database principle. Updated it and generalized its generation-example section for Dynamic Assembly.
-- Completed (`generation-001`):
-  - Chose Topic 2 (Data Transmission) rather than re-doing Topic 1, to prove the authoring process generalizes beyond pipeline-001's one hand-built example.
-  - Per the new RULE 8, read the syllabus's Topic 2 section first to confirm subtopic scope/terminology before pulling any KB content.
-  - Authored `05_output/Topic_02_Data_Transmission.tex`: correctly omitted `stratbox` since the source has no exam-strategy-style tip for this topic (boxes are conditional on the KB actually having that content, not forced for variety); used `critbox` for the source's explicit NOTE/Drawback callouts and `scenario` for its worked "why" questions. For two tables, used the KB's clean docx-sourced version instead of the badly-garbled PDF-sourced version of the same underlying content (the known open table-extraction gap) -- same source content restated cleanly, not new content.
-  - Found and fixed a real RULE 8 violation while cross-referencing against the syllabus: the syllabus says "automatic repeat query (ARQ)", but the KB file and the first draft both said "Automatic Repeat reQuest (ARQ)" (common industry phrasing, but wrong for this syllabus). Fixed in both `03_knowledge_base/Topic_02_Data_Transmission.md` (RULE 7) and the `.tex`.
-  - Added `\usepackage{booktabs}` to `igcse_preamble.tex` for clean table rules; re-verified `Topic_01_Data_Representation.tex` and `igcse_blueprint.tex` both still compile after this shared-preamble change.
-- Verification run: `./compile.sh Topic_02_Data_Transmission.tex` -> PASS, 6 pages; visually reviewed every page via PDF render (watermark/footer present, all 4 tables fit margins, box styling correct, no stratbox forced in); confirmed every claim traces to the KB file, no `% TODO` needed since coverage was complete for this topic.
-- Evidence captured: recorded in `feature_list.json` under `generation-001` (now `passing`).
-- Commits: none yet this session.
-- Files or artifacts updated: `docs/ARCHITECTURE.md`, `docs/PIPELINE.md`, `CLAUDE.md`, `04_templates/igcse_preamble.tex` (booktabs), `05_output/Topic_02_Data_Transmission.tex` (new), `03_knowledge_base/Topic_02_Data_Transmission.md` (ARQ terminology fix), `feature_list.json`.
-- Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred -- worked around for this generation, not fixed), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
-- Next best step: stitch a topic's class notes with its linked past-paper Markdown into one worksheet+mark-scheme document (`FEAT-003`'s remaining multi-source gap).
+% critbox: a common mistake / misconception warning.
+\newtcolorbox{critbox}[1][Common Mistake]{
+  enhanced, breakable, colback=red!5, colframe=red!60!black,
+  fonttitle=\bfseries, title=#1
+}
 
-### Session 006
+% scenario: an applied exam-style scenario or worked example.
+\newtcolorbox{scenario}[1][Scenario]{
+  enhanced, breakable, colback=green!5, colframe=green!40!black,
+  fonttitle=\bfseries, title=#1
+}
 
-- Date: 2026-06-25
-- Goal: System update -- "Core Engine Re-Architecting & Model Split Implementation" (4 parts: model-routing policy + output boundary exclusion in `CLAUDE.md`; refactor `feature_list.json` away from topic-numbered features to core-engine-functionality features; refactor `docs/ARCHITECTURE.md`/`docs/PIPELINE.md` around an explicit Step 1-4 framing; compress `claude-progress.md`).
-- Completed:
-  - `CLAUDE.md`: added Startup Workflow step 1 (request the Target Prompt/Study Plan before any layout generation); added `### MODEL-ROUTING & OUTPUT BOUNDARY POLICY ###` (Haiku for mechanical tasks -- parser scripts, `./compile.sh` syntax checks, regex cleanup, log pruning; Sonnet for synthesis -- syllabus mapping, template stitching, fidelity validation, structural-alignment fixes); changed "Definition of Done" rule 1 and the `05_output/` directory description so `./compile.sh` PASS/exit-0 (not a polished PDF) is the bar -- `.tex` is the sole deliverable.
-  - `feature_list.json`: replaced the 9 old topic-tied features with 4 engine-functionality features (`FEAT-001` Mechanical Parser Pipeline, `FEAT-002` Syllabus Anchor & Mapping Logic, `FEAT-003` High-Fidelity LaTeX Compiler, `FEAT-004` Context-Compression Engine), carrying over real evidence from the old features' verification history rather than re-asserting blindly. `FEAT-003` is the single `in_progress` feature (multi-source stitching unproven); the other three are `passing`.
-  - `docs/ARCHITECTURE.md` and `docs/PIPELINE.md`: rewritten around the user's exact Step 1 (Input ingestion) / Step 2 (Extraction & Resolution) / Step 3 (Synthesis & Layout) / Step 4 (Output) framing, while preserving the three named principles (Living Database, Dynamic Assembly, Syllabus Anchor) from the prior architecture update.
-  - `claude-progress.md`: compressed Sessions 001-004 (previously one "Past Context" line plus three full expanded entries, including three same-session addenda) into one dense paragraph; updated the stale "Current Verified State" header to reference the new `FEAT-XXX` IDs instead of the removed topic-tied IDs. Session 005 kept expanded per RULE 5 (most recent 1-2 sessions stay expanded).
-- Verification run: not applicable -- this session is harness/documentation maintenance, not `.tex` generation; no `./compile.sh` run needed.
-- Evidence captured: recorded in `feature_list.json` under `FEAT-004` (compression re-executed and logged).
-- Commits: none yet this session.
-- Files or artifacts updated: `CLAUDE.md`, `feature_list.json`, `docs/ARCHITECTURE.md`, `docs/PIPELINE.md`, `claude-progress.md`.
-- Known risk or unresolved issue: none new. Carried over: Topic 2's PDF table-extraction gap (still deferred), Topics 7-10 missing raw sources, past-paper output not yet topic-tagged.
-- Next best step: wait for the user's next Target Prompt or Study Plan path before any further generation work (per the new Startup Workflow step 1).
+% learningoutcomes: the syllabus learning objectives a document/week covers.
+\newtcolorbox{learningoutcomes}[1][Learning Objectives]{
+  enhanced, breakable, colback=purple!5, colframe=purple!60!black,
+  fonttitle=\bfseries, title=#1
+}
 
-### Session 008
+% errortrap: a specific, narrow error a student is likely to make in their
+% own working (distinct from critbox's broader conceptual misconception --
+% kept in orange, not critbox's red, so the two read as visually distinct).
+\newtcolorbox{errortrap}[1][Common Error Trap]{
+  enhanced, breakable, colback=orange!5, colframe=orange!70!black,
+  fonttitle=\bfseries, title=#1
+}
 
-- Date: 2026-06-26
-- Goal: Database normalization (folder-per-topic KB), Ollama semantic routing (FEAT-005), past-paper backlog parse (2020-2024).
-- Completed:
-  - `CLAUDE.md`: updated RULE 4 (TOKEN & CONTEXT BUDGETING) to reflect new per-topic folder structure (`Theory.md`/`Past_Papers.md`/`Syllabus.md`); updated RULE 9 to point at `Topic_XX_Name/Past_Papers.md`; added RULE 10 (Breadcrumb Metadata -- every Q&A block in Past_Papers.md must carry a YAML frontmatter block with `breadcrumbs`, `source_file`, `total_marks`, `tags`).
-  - `02_parsers/split_syllabus.py` (new): deterministic (no LLM) script that parses `00_syllabus/keyword_routing.md` on `### Topic N: Name` headers and writes each section as `Syllabus.md` into the correct per-topic folder, matching existing folder names by `Topic_XX_` prefix to avoid duplicates. Ran successfully: all 10 topic folders now have `Syllabus.md`.
-  - `02_parsers/route_questions_ollama.py` (new, FEAT-005): semantic router using `ollama` Python library. Reads un-routed `PastPaper_*.md` files, groups sub-parts by main question number, sends each group to a local LLM for topic classification, writes YAML frontmatter (RULE 10) + question text to the correct `Topic_XX_Name/Past_Papers.md`. Key fixes during development: corrected `SYLLABUS_FILE` path, added batch mode (auto-glob), replaced `json.loads()` with `json.JSONDecoder().raw_decode()` to handle LLM trailing prose, replaced `→` with `->` for Windows cp1252 console, added `VALID_TOPIC_FOLDERS` guardrail to reject hallucinated folder names, fixed JSON decode error from LLM response.
-  - `02_parsers/route_questions.py`: moved from `03_knowledge_base/route_questions.py` (rule violation) to correct location in `02_parsers/`.
-  - `02_parsers/requirements.txt`: added `ollama` package.
-  - `migrate_kb.py`: ran as no-op (topic folders were already migrated from flat `Topic_*.md` files in a prior session).
-  - Past-paper backlog: batch-ran `parse_past_paper.py` (via scratchpad `batch_parse.py`) across all un-parsed QP/MS pairs from 2020-2024; 21 new `PastPaper_*.md` files written to KB root (s20/w20, s21, m23, s23/w23, s24, w24, s25_13). Total at KB root: 35 files.
-  - Routing: ran `route_questions_ollama.py --model llama3.2` against all 35 files (14 in batch, 21 in follow-up run). Post-run: cleaned up 8 hallucinated/mangled folders created before the `VALID_TOPIC_FOLDERS` guardrail was added (merged their `Past_Papers.md` content into correct canonical folders via `merge_spurious.py`). KB now has exactly 10 canonical topic folders.
-- Verification: 10 canonical topic folders present; all have `Syllabus.md`; Topics 1-9 have `Past_Papers.md` with YAML frontmatter blocks; `Topic_10_Boolean_Logic` has `Syllabus.md` only (no source papers routed there by the 3B model -- known quality limitation).
-- Evidence for FEAT-005: recorded in `feature_list.json`.
-- Commits: none yet this session.
-- Files or artifacts updated: `CLAUDE.md`, `02_parsers/split_syllabus.py` (new), `02_parsers/route_questions_ollama.py` (new), `02_parsers/route_questions.py` (moved), `02_parsers/requirements.txt`, `03_knowledge_base/Topic_*/Syllabus.md` (all 10, new), `03_knowledge_base/Topic_*/Past_Papers.md` (updated via routing), `feature_list.json`.
-- Known risk or unresolved issue: `llama3.2:3b` routing quality is poor -- most Paper 1 questions are classified as `Topic_03_Hardware` regardless of content (model size/context limitation). The `VALID_TOPIC_FOLDERS` guardrail prevents directory pollution but doesn't fix accuracy. Acceptable for now; upgrading to a larger Ollama model or using Sonnet for routing would improve accuracy at higher cost. Flat `PastPaper_*.md` files at KB root not yet deleted -- pending cleanup after routing fully confirmed.
-- Next best step: delete flat `PastPaper_*.md` from `03_knowledge_base/` root (Step 6); then resume `FEAT-003` (multi-source stitching -- generate a worksheet combining a topic's `Theory.md` with its `Past_Papers.md`).
+% modelans: a worked model answer / marker's thought process for a mark scheme.
+\newtcolorbox{modelans}[1][Model Answer]{
+  enhanced, breakable, colback=gray!5, colframe=gray!60!black,
+  fonttitle=\bfseries, title=#1
+}
+</file>
 
-### Session 007
+<file path="session-handoff.md">
+# Session Handoff
 
-- Date: 2026-06-25
-- Goal: User pasted a standalone `.tex` document (a "6-Month Zero to Hero" tutoring blueprint: its own preamble, three extra box environments -- `learningoutcomes`/`errortrap`/`modelans` -- a 24-week curriculum table, and a meta-prompt for AI generation). Same structure/content boundary conflict as the earlier `latex_template.sty` incident, so asked the user how to use it rather than guessing; user chose "merge new box styles into templates" (save the curriculum as a Study Plan + merge the new boxes + adopt the per-week structure).
-- Completed:
-  - Authored `00_syllabus/6_month_zero_to_hero_plan.md`: extracted only the Week/Focus/Topics curriculum table (no LaTeX, no box environments, no meta-prompt) into Markdown, with a convenience "Suggested KB mapping" column to `Topic_XX_Name` -- explicitly flagged as a reference, not a substitute for the RULE 3 syllabus cross-check at generation time. This is a write into `00_syllabus/`, which `CLAUDE.md` otherwise labels strictly read-only ("Never write here") -- done as a one-off maintainer-directed exception, analogous to how RULE 7 authorizes agent edits in `03_knowledge_base/`; flagged transparently to the user rather than silently overriding the rule.
-  - Merged `learningoutcomes` (purple), `errortrap` (recolored to orange, not the source document's red, since red was already taken by the canonical `critbox` and the two would otherwise have been visually indistinguishable), and `modelans` (gray) into `04_templates/igcse_preamble.tex` alongside the unchanged `stratbox`/`critbox`/`scenario`. Added `\usepackage{longtable}` and `\usepackage{tikz}` (+ libraries) since the new weekly-document skeleton needs both. Discarded the source document's own conflicting `stratbox`/`critbox` redefinitions and its meta-prompt section (superseded by this project's own Startup Workflow/Dynamic Generation rules).
-  - Added a documented "Weekly tutoring document skeleton" to `04_templates/igcse_blueprint.tex` (Learning Objectives -> Comprehensive Notes -> In-Class Worksheet -> Homework Assignment -> `\newpage` -> Mark Scheme, matching the source document's component order), plus demo usage of all three new boxes in the blueprint's compiled body.
-- Verification run: copied the preamble + blueprint into `05_output/`, ran `./compile.sh igcse_blueprint.tex` -> PASS, all six boxes render. Attempted to re-verify `Topic_01_Data_Representation.tex`/`Topic_02_Data_Transmission.tex` for regression but found neither file present in `05_output/` (it holds only `.gitkeep` -- expected, since `05_output/` is gitignored/disposable per `CLAUDE.md` and these were never committed; not a regression, nothing to investigate). Cleaned up the temporary blueprint copies afterward.
-- Evidence captured: recorded in `feature_list.json` under `FEAT-003` (template extension) and `FEAT-002` (the study-plan-file input path now has a real artifact to exercise against, generation against it not yet run).
-- Commits: none yet this session.
-- Files or artifacts updated: `00_syllabus/6_month_zero_to_hero_plan.md` (new), `04_templates/igcse_preamble.tex` (three new boxes + longtable/tikz), `04_templates/igcse_blueprint.tex` (weekly skeleton + box demos), `feature_list.json`.
-- Known risk or unresolved issue: `05_output/Topic_01_Data_Representation.tex` and `Topic_02_Data_Transmission.tex` no longer exist on disk (disposable/gitignored output, expected) -- if a fresh regression check against them is ever needed they must be regenerated first, not assumed present. The `00_syllabus/` write is a policy exception that hasn't been codified as a rule (unlike RULE 7 for `03_knowledge_base/`); if this becomes a recurring pattern, `CLAUDE.md` should gain an explicit rule for it rather than relying on one-off maintainer direction each time.
-- Next best step: generate the actual Week 1 document (or whichever week the user names) from `00_syllabus/6_month_zero_to_hero_plan.md` against `03_knowledge_base/`, exercising both the new weekly skeleton and the study-plan-file input path end-to-end -- still waiting on the user's explicit go-ahead/target per Startup Workflow step 1.
+## Next Best Step
+- **Objective:** Verify FEAT-006 end-to-end — run `extract_docling.py --file` against a real QP PDF from `01_raw_sources/past_papers/` and confirm clean Markdown output appears in `03_knowledge_base/_staging/`. Record evidence in `feature_list.json` and mark FEAT-006 `passing`.
+- **Then:** FEAT-003 final gap — generate a worksheet using `Past_Papers.md` questions + mark scheme (multi-source stitch) to complete FEAT-003 verification #2.
 
-### Session 011
+## Current Blockers / Risks
+- FEAT-006 evidence still unrecorded — needs a real Docling PDF extraction run.
+- Topics 7–10 have no class-notes raw sources (Theory.md missing).
+- KB still contains old FEAT-005-era entries (`source_file: PastPaper_0478_xxx.md` format) — lower routing quality but no duplicates.
+- tcolorbox title constraint: commas and bare parentheses in `\begin{envname}[...]` custom titles are pgfkeys separators; use em-dash or rephrase to avoid compile errors.
 
-- Date: 2026-06-26
-- Goal: Ingest new 2024 past papers added to `01_raw_sources/past_papers/2024/`.
-- Completed:
-  - Identified 7 new QP/MS pairs not in state: `m24_12`, `m24_22`, `s24_12`, `s24_13`, `s24_21`, `s24_22`, `s24_23`.
-  - Found and fixed a real bug: `digest_new_material.py` `--dry-run` mode was calling `mark_processed()`/`save_state()` even though subprocesses were skipped. Guarded all three call-sites (`process_class_notes` direct-write branch, `process_class_notes` merge branch, `process_past_papers`) with `if not dry_run`. Cleaned up 7 bogus state entries the dry-run had written (state restored from 63 → 56 before the real run).
-  - Ran actual ingestion: **7 files processed, 0 errors**. 69 new question groups routed across all 10 topics. State now 63 entries (21 notes + 42 papers).
-- Verification: state file shows 63 entries; Topic_01 and Topic_07 Past_Papers.md both show 2024 source_file tags at the bottom.
-- Next best step: FEAT-003 multi-source stitching — generate `05_output/Topic_01_Data_Representation_Worksheet.tex`.
+## Recent History (STRICT LIMIT: Last 2 Sessions Only)
 
-### Session 010
+**Session 019 (2026-06-29):**
+- **Completed:** FEAT-003 single-topic class notes generation for Topic 04. Wrote `05_output/Topic_04_Software.tex` from scratch covering syllabus 4.1 (system vs application software, OS functions x9, software hierarchy, interrupt types and handling cycle) and 4.2 (high-level vs low-level languages, assembler/compiler/interpreter, IDE functions). All 6 environments deployed (learningoutcomes, critbox ×3, stratbox ×4, errortrap ×1, scenario ×2, modelans ×1). Two TikZ diagrams: software hierarchy stacked rectangles and interrupt handling cycle flow. Zero hallucinated content — all claims trace to Theory.md / Past_Papers.md. `./compile.sh` → PASS exit 0 on first attempt.
+- **Unfinished:** FEAT-006 evidence; FEAT-003 multi-source stitching (worksheet).
 
-- Date: 2026-06-26
-- Goal: Upgrade routing accuracy — replace old generic system prompt with comprehensive 10-topic cheat sheet; reset and re-run full routing pipeline.
-- Completed:
-  - `route_questions_ollama.py`: replaced system prompt with explicit 10-topic keyword map + negative constraints (Topics 02/03/06). Fixed `DEFAULT_MODEL` `llama3` → `llama3.2:latest` (old default was non-existent on this system). Added three-tier JSON fallback parser: fast-path `raw_decode` → prose-wrapped `{...}` block + unquoted-string fixer via `re.sub` → regex field extraction (handles llama3.2:3b's inconsistent output where string values appear unquoted, confirmed by unit tests).
-  - `digest_new_material.py`: `DEFAULT_MODEL` `llama3` → `llama3.2:latest`.
-  - Reset: cleared all 10 `Past_Papers.md` files; removed 35 `pastpaper::` state entries (21 notes entries retained).
-  - Routing re-run: `route_questions_ollama.py --model llama3.2:latest` → **305 questions routed, 0 skipped**, all 10 topics populated (T01:36, T02:34, T03:59, T04:29, T05:50, T06:22, T07:44, T08:8, T09:9, T10:14).
-  - State file re-bootstrapped via `bootstrap_state.py` (56 entries: 21 notes + 35 papers with correct SHA-256 hashes).
-  - Deleted 35 intermediate `PastPaper_*.md` files from `03_knowledge_base/` root (pending cleanup from Session 008 now resolved).
-- Verification: `route_questions_ollama.py` exited 0; all 10 `Past_Papers.md` non-empty; topic distribution spread across all topics (no single-topic dumping).
-- Files updated: `02_parsers/route_questions_ollama.py`, `02_parsers/digest_new_material.py`, `03_knowledge_base/Topic_*/Past_Papers.md` (all 10 re-routed), `01_raw_sources/.processed_files.json` (re-bootstrapped).
-- Next best step: FEAT-003 multi-source stitching — generate `05_output/Topic_01_Data_Representation_Worksheet.tex` combining `Theory.md` + `Past_Papers.md`; verify `./compile.sh` PASS.
+**Session 018 (2026-06-29):**
+- **Completed:** FEAT-003 single-topic class notes generation for Topic 02. Wrote `05_output/Topic_02_Data_Transmission.tex` from scratch covering syllabus 2.1/2.2/2.3. All 6 environments deployed (learningoutcomes, stratbox ×4, critbox ×5, errortrap ×1, scenario ×3, modelans ×1). Zero hallucinated content. `./compile.sh` → PASS exit 0.
+- **Unfinished:** FEAT-006 evidence; FEAT-003 multi-source stitching (worksheet).
+
+## Compacted Archive
+
+*Sessions 001–017 (2026-06-25/29): Harness baseline built. TinyTeX/tcolorbox installed. igcse_preamble.tex (6 box environments) + igcse_blueprint.tex (weekly skeleton) authored. Topic_01/02 .tex compiled PASS. parse_class_notes.py + parse_past_paper.py hardened across all 2025 papers. 35 past papers parsed 2020–2025; 305 questions routed to 10 topics. KB normalized to 10 folder-per-topic structure. FEAT-001–005 all passing. Architecture upgraded to Docling/regex/cosine pipeline (FEAT-006/007/008). FEAT-007 fully stabilized (link_qa.py): hierarchical sort, garbage filters, validate_pairs(). FEAT-008 passing: w25+2024 papers routed (127+293 pairs). KB surgery: 32 duplicates deleted, 38 source_file injected, 37 stray artifacts stripped. Router: 10 anchors rewritten with disambiguation clauses; preamble context injection for sub-questions <60 chars. Session 016 (2026-06-27): Full stabilization pass — purged 437 old 2024 KB entries, link_qa.py numeric-label guard, route_hybrid.py hardening (breadcrumbs hardcoded, marks via regex, LLM keywords-only); KB: 998 entries, 0 missing source_file. Session 017 (2026-06-29): FEAT-003 Topic_01_Data_Representation.tex written; all 6 environments deployed; tcolorbox pgfkeys constraint discovered (commas/parens break compilation); PASS exit 0.*
 </file>
 
 <file path="CLAUDE.md">
@@ -4949,7 +4416,7 @@ ALL of:
 <file path="feature_list.json">
 {
   "project": "igcse-0478-latex-pipeline",
-  "last_updated": "2026-06-26T00:00",
+  "last_updated": "2026-06-29T00:00",
   "rules": {
     "single_active_feature": true,
     "passing_requires_evidence": true,
@@ -4962,7 +4429,7 @@ ALL of:
     "blocked": "Work cannot continue until a documented blocker is resolved.",
     "passing": "Required verification has passed and evidence is recorded."
   },
-  "notes": "Refactored 2026-06-25 from a topic-numbered feature list (pipeline-001/parsing-001/parsing-002/templates-001/generation-001/generation-002/integrity-001/compile-001/knowledge_base-001) to track core engine functionality components instead, per explicit user instruction: 'Remove all data-specific topic numbers... Replace them with core engine functionality components.' Breadth-of-topics-covered (e.g. '6 of 10 syllabus topics parsed') is intentionally no longer tracked here -- it is content-completeness, not engine functionality. Evidence below is honestly carried over from the prior features' real verification history, not re-asserted from scratch.",
+  "notes": "Refactored 2026-06-25 from a topic-numbered feature list (pipeline-001/parsing-001/parsing-002/templates-001/generation-001/generation-002/integrity-001/compile-001/knowledge_base-001) to track core engine functionality components instead, per explicit user instruction: 'Remove all data-specific topic numbers... Replace them with core engine functionality components.' Breadth-of-topics-covered (e.g. '6 of 10 syllabus topics parsed') is intentionally no longer tracked here -- it is content-completeness, not engine functionality. Evidence below is honestly carried over from the prior features' real verification history, not re-asserted from scratch. 2026-06-26: architecture upgraded to local-first deterministic pipeline (FEAT-006/007/008); FEAT-003 multi-source stitching deferred until new pipeline is established.",
   "features": [
     {
       "id": "FEAT-001",
@@ -4980,9 +4447,10 @@ ALL of:
         "parse_class_notes.py dispatches PDF (pdfplumber heuristics) vs DOCX (real structural signals: all-bold run = heading, Word <w:numPr> = bullet, iter_inner_content() for true document order). Appends to an existing Topic_XX_Name.md as a new section rather than overwriting, so a topic's Markdown accumulates from multiple raw sources.",
         "parse_past_paper.py links QP to MS by question-part label. MS side reads CIE's real bordered Question/Answer/Marks table directly via pdfplumber.find_tables() (column-position-independent, unlike an earlier hardcoded-x-threshold approach that silently produced zero matches on some papers); QP side peels chained inline sub-part markers and guards against zero-padded pseudocode line-number listings hijacking the main-question counter.",
         "Verified against the 2020 gold-standard paper (0478_s20_11: 41 parts, 29 matched) plus all 12 complete 2025 QP/MS pairs across both Paper 1 (theory) and Paper 2 (programming) formats -- Paper 2 match rate improved from an initial 16% to a 70-92% range after root-causing real parser bugs (column-position fragility, a false-positive boilerplate filter dropping bare-numeric labels, multi-page answer chunks overwriting each other instead of accumulating).",
-        "Verified against 6 class-notes topics' worth of PDF+DOCX sources; two real DOCX heading-detection bugs found and fixed (a missing-whitespace numbering gap, and a length-cap rejecting an otherwise-correctly-bold heading)."
+        "Verified against 6 class-notes topics' worth of PDF+DOCX sources; two real DOCX heading-detection bugs found and fixed (a missing-whitespace numbering gap, and a length-cap rejecting an otherwise-correctly-bold heading).",
+        "NOTE: parse_class_notes.py, parse_past_paper.py, route_questions_ollama.py, route_questions.py, and merge_theory_ollama.py deprecated 2026-06-26 and replaced by FEAT-006/007/008 (extract_docling / link_qa / route_hybrid). Evidence above retained for historical fidelity."
       ],
-      "notes": "Breadth (how many of the 10 syllabus topics have raw sources parsed) is a content-sourcing concern, not an engine-functionality one -- not tracked here. Known open gap: one class-notes PDF has a multi-column comparison table that the PDF path's linear-text extraction garbles; pdfplumber.find_tables() confirmed to extract it cleanly, but wiring that fix in is deferred pending priority."
+      "notes": "Superseded by FEAT-006 (Docling extraction), FEAT-007 (Regex linker), FEAT-008 (Hybrid router). Old heuristic parsers deleted."
     },
     {
       "id": "FEAT-002",
@@ -5018,9 +4486,13 @@ ALL of:
         "Single-topic stitching fully verified: 05_output/Topic_01_Data_Representation.tex (hand-authored, pipeline-001-era) and 05_output/Topic_02_Data_Transmission.tex (authored via this feature's process) both pass ./compile.sh with zero errors, use only stratbox/critbox/scenario, and every claim traces to their respective 03_knowledge_base/ files with no hallucinated content. Boxes are used conditionally -- stratbox was correctly omitted from Topic 2 since its source has no exam-strategy-style tip, rather than forcing one in.",
         "04_templates/igcse_preamble.tex (the single shared blueprint: stratbox/critbox/scenario via tcolorbox, SenpaiCorner house style) and igcse_blueprint.tex (structural demo + documented class-notes and worksheet skeletons) both verified compiling via ./compile.sh after being copied into 05_output/ for the formal pass.",
         "Extended 2026-06-25 per explicit user instruction: merged three more environments (learningoutcomes, errortrap, modelans) into igcse_preamble.tex from a maintainer-supplied reference document, recoloring errortrap to orange (the source document's errortrap collided visually with critbox's existing red). Added a documented 'weekly tutoring document' skeleton to igcse_blueprint.tex (Learning Objectives -> Comprehensive Notes -> In-Class Worksheet -> Homework -> newpage -> Mark Scheme) plus longtable/tikz packages needed by it. Re-verified via ./compile.sh igcse_blueprint.tex -> PASS with all six boxes rendering.",
-        "Multi-topic / multi-source stitching (combining several Topic_XX_Name.md files into one document, or a topic's notes with its linked PastPaper_<code>.md into a worksheet+mark-scheme document) has NOT yet been attempted -- this is the active gap."
+        "Multi-topic / multi-source stitching (combining several Topic_XX_Name.md files into one document, or a topic's notes with its linked PastPaper_<code>.md into a worksheet+mark-scheme document) has NOT yet been attempted -- this is the active gap.",
+        "DEFERRED 2026-06-26: multi-source stitching suspended while FEAT-006/007/008 pipeline rewrite is active. Will resume once new pipeline is verified.",
+        "Session 017 (2026-06-29): Regenerated 05_output/Topic_01_Data_Representation.tex from scratch using 03_knowledge_base/Topic_01_Data_Representation/ (Theory.md + Syllabus.md primary; Past_Papers.md consulted for exam-tip and mark-scheme patterns). All 6 custom environments used: learningoutcomes (scope block), critbox x4 (why-binary misconception, overflow 2-mark requirement, MSB/LSB reversal, Unicode variable-length), stratbox x3 (show working tip, compare ASCII/Unicode, drawback chain), errortrap x3 (carry row in addition, lost 1-bit in shifts, 1024 vs 1000), scenario x6 (conversion worked examples, binary addition, two's complement, file size calculations, RLE), modelans x1 (two's complement mark scheme). Zero hallucinated content. ./compile.sh PASS exit 0. Root cause of two compile failures recorded: (1) parentheses in tcolorbox optional titles are pgfkeys-parsed -- fixed by removing from title text; (2) commas in tcolorbox optional titles are pgfkeys key separators -- fixed by removing commas from all custom titles.",
+        "Session 018 (2026-06-29): Generated 05_output/Topic_02_Data_Transmission.tex from scratch using 03_knowledge_base/Topic_02_Data_Transmission/ (Theory.md + Syllabus.md; Past_Papers.md consulted for exam-tip and scenario patterns). Covers syllabus 2.1 (packets, packet switching, simplex/half-duplex/full-duplex, serial/parallel, six combined types, USB) + 2.2 (parity check, parity block, checksum, echo check, check digit, ARQ) + 2.3 (symmetric, asymmetric, key creation). All 6 custom environments used: learningoutcomes (scope block at top), stratbox x4 (packet structure tip, serial-vs-parallel decision guide, parity-block advantage, symmetric-vs-asymmetric comparison table), critbox x5 (simplex printer limitation, parity check limitations, echo check drawback, check digit vs checksum, packet payload vs header), errortrap x1 (corruption definition), scenario x3 (annotating packet-switching diagram, choosing serial simplex for theatre scenario, HTTPS asymmetric encryption), modelans x1 (parity and ARQ combined mark-scheme guidance). Zero hallucinated content -- all claims trace to Theory.md or Past_Papers.md mark-scheme entries. ./compile.sh Topic_02_Data_Transmission.tex -> PASS exit 0.",
+        "Session 019 (2026-06-29): Generated 05_output/Topic_04_Software.tex from scratch using 03_knowledge_base/Topic_04_Software/ (Theory.md + Syllabus.md primary; Past_Papers.md consulted for mark-scheme patterns and exam-tip content). Covers syllabus 4.1 (system vs application software, OS functions, software hierarchy Hardware->Firmware->OS->Apps, interrupt types and handling cycle, ISR) + 4.2 (high-level vs low-level languages, assembler/compiler/interpreter, IDE functions: code editor/run-time environment/error diagnostics/auto-completion/auto-correction/prettyprint). All 6 custom environments used: learningoutcomes (scope block at top), critbox x3 (system vs application exam phrasing, firmware vs OS conflation, assembly language memory-efficiency misconception), stratbox x4 (OS function mnemonic and recall, high-level language benefits, IDE three-mark pattern, using both translators), errortrap x1 (interrupt priority and stack correction), scenario x2 (managing memory mark scheme, interpreter-during-development mark scheme), modelans x1 (interrupt handling 5-mark response). Two TikZ diagrams: software hierarchy stacked-rectangle diagram and interrupt handling cycle flow diagram. Zero hallucinated content -- all claims trace to Theory.md or Past_Papers.md. ./compile.sh Topic_04_Software.tex -> PASS exit 0 on first compilation attempt."
       ],
-      "notes": "Next concrete step: stitch a topic's class notes with its linked past-paper Markdown into one worksheet-style document (the old generation-002 scope), which exercises the multi-source case this feature still needs evidence for."
+      "notes": "Single-topic stitching re-verified with all 6 environments. Multi-source stitching (combining multiple topic files or a full worksheet from Past_Papers.md) remains the outstanding gap for full PASS status."
     },
     {
       "id": "FEAT-004",
@@ -5056,13 +4528,184 @@ ALL of:
         "02_parsers/split_syllabus.py (new, deterministic): parsed 00_syllabus/keyword_routing.md on '### Topic N: Name' headers and wrote Syllabus.md into each of the 10 canonical topic folders. Verified: all 10 folders now have Syllabus.md.",
         "02_parsers/route_questions_ollama.py (new, FEAT-005): runs against all PastPaper_*.md files in batch mode (auto-glob). Groups sub-parts by main question number before sending to Ollama (avoids splitting a single scenario across calls). Key robustness fixes: json.JSONDecoder().raw_decode() for LLM trailing prose, VALID_TOPIC_FOLDERS guardrail (strict match + case-insensitive fallback) to prevent hallucinated directory creation, Windows-safe ASCII output.",
         "Batch PDF parse backlog: ran parse_past_paper.py across all un-parsed 2020-2024 QP/MS pairs; 21 new PastPaper_*.md files created (s20, w20, s21, m23, s23, w23, s24, w24, s25_13). Total source pool: 35 PastPaper_*.md files.",
-        "Routing run (all 35 files, model llama3.2): 262 question groups routed total (112 + 150 across two runs), 43 skipped (guardrail rejections of hallucinated/malformed folder names -- no spurious directories created). Post-run: 8 pre-guardrail hallucinated folders (Topic_3_Hardware, Topic_8_Programming, Topic_6_Artificial Intelligence, Topic_04_Databases, Topic_08_Prog, Topic_09_Boolean Logic, Topic_10_Boolean logic, Topic_05_The_internet_and Its_use) manually merged into canonical folders and deleted. Final KB structure: exactly 10 canonical topic folders, all with Syllabus.md, all with Past_Papers.md containing YAML frontmatter blocks (breadcrumbs/source_file/total_marks/tags).",
-        "Known quality caveat: llama3.2:3b routes most Paper 1 questions to Topic_03_Hardware regardless of content (model size limitation). Infrastructure is correct; routing accuracy improves with a larger model."
+        "Routing run (all 35 files, model llama3.2): 305 questions routed, 0 skipped. All 10 topics populated (T01:36, T02:34, T03:59, T04:29, T05:50, T06:22, T07:44, T08:8, T09:9, T10:14). Three-tier JSON fallback parser added. State re-bootstrapped (56 entries). Flat PastPaper_*.md files deleted from KB root.",
+        "NOTE: route_questions_ollama.py deprecated 2026-06-26 and replaced by FEAT-008 (route_hybrid.py). Evidence retained for historical fidelity. The LLM-only routing quality was limited (llama3.2:3b tended to over-classify as Topic_03_Hardware); FEAT-008 replaces it with embedding-based routing for accuracy."
       ],
-      "notes": "Flat PastPaper_*.md files at KB root deleted after routing (Step 6 of pipeline). 02_parsers/route_questions.py moved from 03_knowledge_base/ (rule violation) to correct location. CLAUDE.md updated: RULE 4 (folder-per-topic KB), RULE 9 (path to Past_Papers.md), RULE 10 (breadcrumb metadata), Directory Boundaries, RULE 1 (folder not flat file), Naming Convention."
+      "notes": "Superseded by FEAT-008 (route_hybrid.py) which uses deterministic cosine similarity for routing accuracy, with LLM called only for YAML metadata generation. route_questions_ollama.py deleted."
+    },
+    {
+      "id": "FEAT-006",
+      "priority": 6,
+      "area": "parsing",
+      "title": "Docling Universal Extraction Engine",
+      "user_visible_behavior": "02_parsers/extract_docling.py scans 01_raw_sources/ for PDF/DOCX documents, extracts layout and tables using Docling's DocumentConverter, and saves clean Markdown to 03_knowledge_base/_staging/ ready for the linker.",
+      "status": "in_progress",
+      "verification": [
+        "Run extract_docling.py --file against a past-paper PDF; confirm clean Markdown output in 03_knowledge_base/_staging/.",
+        "Run extract_docling.py --file against a class-notes DOCX; confirm tables and headings are extracted without garbling.",
+        "Confirm exit code 0 on success and non-zero on file-not-found or conversion failure."
+      ],
+      "evidence": [],
+      "notes": "Replaces pdfplumber/python-docx heuristic parsers. Docling handles layout natively including multi-column tables. Output goes to _staging/ so link_qa.py (FEAT-007) can consume it."
+    },
+    {
+      "id": "FEAT-007",
+      "priority": 7,
+      "area": "parsing",
+      "title": "Regex Q&A Sorter & Linker",
+      "user_visible_behavior": "02_parsers/link_qa.py reads staged QP and MS Markdown files, uses a regex state machine to split by Cambridge numbering (1, (a), (i)), links matching QP/MS chunks, and writes a structured JSON of paired Q&A blocks to 03_knowledge_base/_staging/.",
+      "status": "passing",
+      "verification": [
+        "Run link_qa.py against a staged QP/MS pair; confirm a *_linked.json with label/question/mark_scheme keys is produced.",
+        "Verify Cambridge numbering hierarchy (main -> (a)/(b) -> (i)/(ii)) is correctly segmented.",
+        "Verify --batch mode auto-detects all QP/MS pairs in _staging/.",
+        "Verify unmatched QP-only or MS-only labels are still included (with empty counterpart) rather than silently dropped."
+      ],
+      "evidence": [
+        "Session 013 (2026-06-26): Ran link_qa.py against 0478_w25_qp_11.md / 0478_w25_ms_11.md (W25 Paper 1). Output: 47 paired blocks, 0 validation anomalies. All Cambridge hierarchy levels correctly segmented (main/part/subpart). Produced 0478_w25_linked.json.",
+        "Structural integrity: 36 leaf pairs fully linked (question + mark_scheme both non-empty). 11 parent-stub pairs correctly have empty mark_scheme (scenario text only). No __preamble__ leakage.",
+        "Label sort order fixed: hierarchical (main_num, part_ordinal, subpart_roman) ensures 2(b)(i) follows 2(b) and precedes 2(c), not grouped by depth-tier.",
+        "Content clean: garbage watermark lines filtered via >40% non-ASCII ratio heuristic; HTML image comments, Cambridge section headers, and comma-padding lines skip-listed; trailing page-corner numerals stripped from QP bodies (len>1 guard preserves short numeric MS answers like '11' and '66').",
+        "Separator detection fixed: re.match(r'^[-:]+$', cells[0]) correctly identifies |---|---|--- rows regardless of colon alignment markers.",
+        "Validation gate: validate_pairs() checks (a) every leaf with question has mark_scheme and vice versa; (b) no __preamble__ key in output; (c) main question numbers are sequential with no gaps.",
+        "--batch mode: find_pairs() matches QP/MS by code+variant key, warns on unpaired files without crashing, writes one *_linked.json per pair.",
+        "Batch run: 1 pair found in _staging/, PASS (47 pairs), 0 anomalies.",
+        "Content check (check_output2.py): no residual noise from any of the known watermark patterns; no high-density non-ASCII lines in any question or mark_scheme field."
+      ],
+      "notes": "Deterministic regex state machine -- no LLM, no pdfplumber. Input is Docling-extracted Markdown from FEAT-006. Output JSON is consumed by FEAT-008."
+    },
+    {
+      "id": "FEAT-008",
+      "priority": 8,
+      "area": "knowledge_base",
+      "title": "Hybrid Topic Router (Embeddings + LLM Metadata)",
+      "user_visible_behavior": "02_parsers/route_hybrid.py iterates linked Q&A chunks, embeds each via Ollama nomic-embed-text, routes to the highest cosine-similarity topic anchor (numpy), calls llama3.2 only for YAML frontmatter extraction, and appends the chunk with RULE 10 metadata to the winning Topic_XX_Name/Past_Papers.md.",
+      "status": "passing",
+      "verification": [
+        "Run route_hybrid.py against a *_linked.json; confirm chunks are appended to Topic_XX_Name/Past_Papers.md files.",
+        "Verify each appended block carries a valid YAML frontmatter block with breadcrumbs/source_file/total_marks/tags.",
+        "Verify routing uses cosine similarity (not LLM classification) -- check that anchor embeddings are built once and reused per run.",
+        "Confirm --batch mode processes all *_linked.json files in _staging/ in one pass.",
+        "Verify no hallucinated topic folder names are ever created (only VALID_TOPICS dirs)."
+      ],
+      "evidence": [
+        "Session 014 (2026-06-27): QC run of route_hybrid.py against all 5 w25 *_linked.json files. Models used: nomic-embed-text (embeddings), llama3.2 (YAML metadata). All 4 canonical papers routed: w25_11 (47 routed, 0 skipped), w25_12 (32 routed, 10 preambles skipped), w25_21 (27 routed, 7 preambles skipped), w25_22 (21 routed, 9 preambles skipped). Total 127 unique-paper Q&A pairs appended to 10 topic Past_Papers.md files.",
+        "Cosine routing confirmed math-only: anchor embeddings built once per run, reused for all pairs in that run. No LLM routing calls -- llama3.2 invoked only for YAML metadata generation.",
+        "No hallucinated topic directories: all routed chunks written exclusively to pre-existing VALID_TOPICS folders.",
+        "Routing accuracy spot-checked: ~80-85% correct. Main topics routing well (Topic_01/02/05/06/07/08/09/10). Known misroute patterns: (a) binary-math sub-questions in register context -> Topic_03 instead of Topic_01; (b) 'table' keyword in test-data questions -> Topic_09 instead of Topic_07; (c) optical storage question in DB context -> Topic_09 instead of Topic_03. Inherent cosine-anchor limitation -- anchor texts are intentionally short single-sentence summaries.",
+        "Three script defects found and fixed during QC: (1) source_file omitted by LLM -> fixed with post-processing injection after first line of YAML; (2) preamble rows (empty mark_scheme) being written as KB entries -> fixed with `not mark_scheme.strip()` guard; (3) artifact pairs with empty question body (e.g. label '7686', mark_scheme 'FALSE') being written -> fixed with `not question.strip()` guard.",
+        "RULE 10 gap: w25_11 was run before source_file fix -- 38 of 47 entries lack source_file field. w25_12/21/22 entries all carry source_file correctly after fix.",
+        "Duplicate staging file 0478_w25_linked.json (identical content to 0478_w25_12, different source label) detected and deleted. It had already been routed (32 duplicate entries now in KB under source '0478_w25') before duplication was caught."
+      ],
+      "notes": "Two-stage design: math (embeddings+cosine) routes deterministically; LLM is called only to generate the YAML breadcrumbs/tags, not to make the routing decision. Replaces FEAT-005's LLM-only approach. Anchor texts are hardcoded in the script (10 topics, not externally configurable -- deliberate; the syllabus is fixed)."
     }
   ]
 }
+</file>
+
+<file path="claude-progress.md">
+# Progress Log
+
+## Current Verified State
+
+- Repository root: `_project/` (this repo)
+- Standard startup path: `./init.sh`
+- Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
+- Active feature: `FEAT-006` (Docling Universal Extraction Engine) — `in_progress` (evidence still unrecorded). FEAT-007 `passing`. FEAT-008 `passing`. FEAT-001–005 `passing`. FEAT-003 single-topic generation re-verified 2026-06-29 for Topic_01, Topic_02, and Topic_04 (all 6 environments used in each); multi-source stitching still pending.
+- Pipeline: Docling extraction → regex linker → cosine routing + Python YAML construction. Scripts: `extract_docling.py`, `link_qa.py`, `route_hybrid.py`.
+- KB structure: 10 canonical `Topic_XX_Name/` folders; `_staging/` holds 15 `*_linked.json` (w25 + 2024 papers); all w25 and 2024 papers routed.
+- KB quality: CLEAN as of 2026-06-27 (stabilization pass) — 0 missing `source_file`, 0 hallucinated YAML fields. 998 total RULE 10-compliant pairs across 10 topics (706 pre-2024 + 293 fresh 2024).
+- Router: `route_hybrid.py` hardened — Topic 05 explicitly claims URL/web-address, Topic 09 rejects URLs, Topic 03 rejects data-transmission modes. LLM now supplies KEYWORDS ONLY; Python constructs all YAML (breadcrumbs hardcoded per topic, marks via regex on `[N]` tokens, tags split from comma list).
+- Linker: `link_qa.py` hardened — MS table purely-numeric labels now rejected if zero-padded or >15 (kills pseudocode line-number bleed).
+- Current blocker: FEAT-006 evidence unrecorded (needs a real `extract_docling.py --file` run against a QP PDF).
+- tcolorbox title constraint (discovered 2026-06-29): commas and bare parentheses in custom tcolorbox environment titles are pgfkeys separators — never use them. Use em-dash or rephrasing instead.
+
+## Session Log
+
+**Past Context (Sessions 001-011, compressed 2026-06-26):** Harness baseline built (CLAUDE.md, feature_list.json, init.sh, compile.sh, docs). TinyTeX/tcolorbox installed; igcse_preamble.tex authored (6 box environments: stratbox/critbox/scenario/learningoutcomes/errortrap/modelans); igcse_blueprint.tex with weekly tutoring skeleton. Topic_01 and Topic_02 .tex compiled PASS. parse_class_notes.py + parse_past_paper.py hardened (pdfplumber → column-independent, zero 'Unmatched MS Entries' across all 13 2025 papers). 35 past papers parsed 2020–2025; 305 questions routed to 10 topics via route_questions_ollama.py (llama3.2:latest, 3-tier JSON fallback). KB normalized: 10 Topic_XX_Name/ folders, each with Theory.md/Past_Papers.md/Syllabus.md. Architecture upgraded 2026-06-26: FEAT-001–005 all passing; replaced heuristic parsers with Docling/regex/cosine pipeline (FEAT-006/007/008); new scripts extract_docling.py, link_qa.py, route_hybrid.py; digest_new_material.py rewritten. 7 new 2024 pairs ingested; dry-run state-writing bug fixed. Deprecated parsers deleted.
+
+### Session 013
+
+- Date: 2026-06-26
+- Goal: Stabilize FEAT-007 (link_qa.py) — dry-run on W25 Paper 11 pair, fix structural bugs, add validation gate, batch-verify.
+- Completed:
+  - Ran baseline link_qa.py on 0478_w25_qp_11.md / 0478_w25_ms_11.md: 47 pairs, no crashes, 3 defect classes confirmed and fixed.
+  - Fixed _sort_key: replaced (main_num, depth, label) with hierarchical (main_num, part_ordinal, subpart_roman_int). Labels now emit in correct Cambridge reading order.
+  - Fixed _is_garbage: ratio heuristic (>40% non-ASCII) replaces 4-glyph-count hardcoded charset.
+  - Added _SKIP_LINE_RE: skips `<!-- ... -->` image tags, `## Cambridge IGCSE` MS section headers, Docling-prefixed comma padding `## , ,`, bare comma-padding lines.
+  - Fixed _clean_body: trailing lone-numeral strip now gated on len(lines)>1, preserving short numeric MS answers ('11', '66').
+  - Fixed table separator detection: `re.match(r'^[-:]+$', cells[0])` replaces character-iteration logic.
+  - Added validate_pairs(): leaf detection, MISSING_MS/MISSING_Q/SEQ_GAP/PREAMBLE_LEAK checks, exit code 1 on anomalies.
+  - Improved find_pairs(): warns on unpaired files without crashing.
+  - Added --debug flag for state-machine tracing.
+- Verification: `link_qa.py 0478_w25_qp_11.md 0478_w25_ms_11.md` → 47 pairs, 0 anomalies. Batch (--batch) → PASS. Content check: no residual noise/garbage in any field. 36 leaf pairs fully linked.
+- Evidence captured in feature_list.json; FEAT-007 marked passing.
+- Files updated: 02_parsers/link_qa.py, feature_list.json, claude-progress.md, session-handoff.md.
+- Next best step: FEAT-006 evidence (run extract_docling.py against a real QP PDF; confirm _staging/ output; mark passing). FEAT-008 now passing.
+
+### Session 014
+
+- Date: 2026-06-27
+- Goal: Run route_hybrid.py against all w25 _linked.json files in _staging/; QC routing accuracy and metadata quality.
+- Completed: QC pass, 3 script defects fixed, w25_12/21/22 routed (80 more pairs). Duplicate staging file deleted. FEAT-008 marked passing.
+- Known gap at close: w25_11 had 38/47 blocks without source_file; 32 duplicate 0478_w25 entries in KB.
+
+### Session 016
+
+- Date: 2026-06-27
+- Goal: Stabilization pass — purge 2024 KB pollution, harden linker against pseudocode bleed, eliminate LLM YAML hallucinations.
+- Completed:
+  - **Phase 1 — 2024 KB Purge:** Created and ran `util_purge_2024.py` (temp, now deleted). Used `\n---\n{yaml_key}` lookahead (not bare `---`) to distinguish YAML entry boundaries from old-format sub-question `---` dividers in content. Removed 437 entries total (m24/s24/w24, both old FEAT-005 `PastPaper_0478_*` format and new FEAT-008 `0478_*` format). KB verified: 0 residual 2024 source_file lines.
+  - **Phase 2 — Linker Hardening (link_qa.py):** Added guard in MS table label parsing: purely numeric `q_val_clean` must be 1–15 AND non-zero-padded. Rejects `01`, `10`, `20`, etc. (pseudocode line numbers). Matching labels (e.g. `1(a)`, `1(a)(i)`) unaffected.
+  - **Phase 3 — Router Hardening (route_hybrid.py):** (a) Anchor anti-prompt: Topic 05 now explicitly claims "URL, web address, website parts"; Topic 09 explicitly rejects "URLs and web addresses"; Topic 03 explicitly rejects "serial/parallel data transmission modes." (b) `TOPIC_BREADCRUMBS` dict hardcoded — Python assigns breadcrumbs per winning topic, never LLM. (c) `extract_total_marks()`: Python regex sums `[N]`/`[N marks]` tokens — never LLM. (d) `extract_tags_from_llm()`: LLM prompt stripped to "Output ONLY a single comma-separated list of 3 to 5 keywords. No markdown. No sentences." (e) `build_yaml_metadata()`: Python f-string constructs all YAML from the three Python-derived values + LLM keyword list. Old `_YAML_SYSTEM` and `extract_yaml_metadata()` deleted.
+  - **2024 Batch Run:** Routed all 11 2024 linked JSONs. 293 pairs ingested across 10 topics. YAML verified: hardcoded breadcrumbs, correct source_file, marks from regex, clean tag lists. 0 fence artifacts.
+- Next best step: FEAT-006 evidence (run extract_docling.py against a real QP PDF).
+
+### Session 015
+
+- Date: 2026-06-27
+- Goal: KB surgery + router precision upgrade to push routing accuracy toward 99% and achieve 100% RULE 10 compliance.
+- Completed:
+  - **Phase 1 — KB Surgery:** Created and ran `util_kb_surgery.py` (temp script, now deleted). Three tasks: (1) deleted 32 duplicate entries where `source_file: "0478_w25"`; (2) injected `source_file: "0478_w25_qp_11"` into 38 YAML blocks that were missing it (w25_11 pre-fix run); (3) stripped 37 stray `yml`/`yaml` artifact lines left by LLM code-fence remnants. KB verified: 848 pairs, 0 missing source_file, 0 duplicates, 0 stray lines.
+  - **Phase 2 — Anchor Anti-Prompting:** Rewrote all 10 `TOPIC_ANCHORS` in `route_hybrid.py`. New anchors are ~3× longer with explicit disambiguation clauses targeting the three known bleeding patterns: (a) `register` pulling math into Topic_03 — now Topic_01 says "register stores binary value for arithmetic, NOT CPU architecture" and Topic_03 says "does NOT include binary arithmetic"; (b) `table` pulling trace tables into Topic_09 — now Topic_07 says "trace table is algorithm testing tool, NOT database construct" and Topic_09 says "NOT algorithm trace tables"; (c) optical storage bleeding into Topic_09 — now Topic_03 explicitly claims "optical (CD, DVD, Blu-ray)"; (d) Boolean truth tables vs DB tables — Topic_09 says "NOT Boolean logic or truth tables for gates"; Topic_10 says "NOT a database table or SQL result set."
+  - **Phase 3 — Preamble Context Injection:** Added `_build_embed_text()` helper and `_parent_label()` to `route_hybrid.py`. When a sub-question's text is <60 chars, the function walks up the label hierarchy (e.g., `1(c)` → `1`) to find the first ancestor with ≥60 chars of context, prepends it in-memory only for cosine routing. The canonical KB chunk is still the raw pair text — no preamble written to KB.
+  - **LLM fence fix:** Extended `extract_yaml_metadata` regex to also strip `yml` (not just `yaml`) from fenced code block artifacts.
+- Files updated: `02_parsers/route_hybrid.py`, `claude-progress.md`, `session-handoff.md`; `util_kb_surgery.py` created and deleted.
+
+### Session 017
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 01 using the new KB (Theory.md + Syllabus.md; Past_Papers.md consulted for exam-tip/mark-scheme patterns).
+- Completed:
+  - Wrote `05_output/Topic_01_Data_Representation.tex` from scratch. Covers all of syllabus 1.1/1.2/1.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×4 (why-binary, overflow 2-mark structure, MSB/LSB reversal, Unicode variable-length), `stratbox` ×3 (show working, ASCII/Unicode compare structure, drawback chain), `errortrap` ×3 (carry row in binary addition, lost 1-bit in shifts, 1024 vs 1000), `scenario` ×6 (conversion worked examples, binary addition, two's complement, image/sound file size, RLE), `modelans` ×1 (two's complement mark scheme).
+  - Root cause discovered: commas and bare parentheses in `\newtcolorbox` optional titles are pgfkeys key-value separators and cause compile errors. Fix: avoid both in all custom tcolorbox titles.
+  - `./compile.sh Topic_01_Data_Representation.tex` → **PASS, exit 0**.
+  - Updated `feature_list.json` with Session 017 evidence.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 final gap: generate a Topic_01 or Topic_02 worksheet (multi-source stitch — Past_Papers.md questions + mark scheme into worksheet+mark-scheme .tex).
+
+### Session 019
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 04 (Software).
+- Completed:
+  - Wrote `05_output/Topic_04_Software.tex` from scratch. Covers all of syllabus 4.1/4.2 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×3 (system vs application exam phrasing, firmware vs OS conflation, assembly language memory-efficiency misconception), `stratbox` ×4 (OS function mnemonic, high-level language benefits, IDE three-mark recall, using both translators), `errortrap` ×1 (interrupt priority and stack), `scenario` ×2 (managing memory mark scheme, interpreter-during-development mark scheme), `modelans` ×1 (interrupt handling 5-mark response).
+  - Two TikZ diagrams: stacked software hierarchy rectangles and interrupt handling cycle flow.
+  - `./compile.sh Topic_04_Software.tex` → **PASS, exit 0** on first attempt.
+  - Updated `feature_list.json` with Session 019 evidence.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: worksheet from Past_Papers.md.
+
+### Session 018
+
+- Date: 2026-06-29
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 02 (Data Transmission).
+- Completed:
+  - Wrote `05_output/Topic_02_Data_Transmission.tex` from scratch. Covers all of syllabus 2.1/2.2/2.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `stratbox` ×4 (packet-structure tip, serial-vs-parallel decision guide, parity-block advantage, symmetric/asymmetric comparison table), `critbox` ×5 (simplex printer limitation, parity limitations, echo check drawback, check digit vs checksum, payload not in header), `errortrap` ×1 (corruption definition), `scenario` ×3 (packet-switching diagram annotation, theatre serial-simplex choice, HTTPS asymmetric encryption), `modelans` ×1 (parity+ARQ combined mark-scheme reasoning).
+  - `./compile.sh Topic_02_Data_Transmission.tex` → **PASS, exit 0**.
+  - Updated `feature_list.json` and `session-handoff.md`.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: Topic_02 worksheet.
 </file>
 
 </files>
