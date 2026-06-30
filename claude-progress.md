@@ -5,7 +5,8 @@
 - Repository root: `_project/` (this repo)
 - Standard startup path: `./init.sh`
 - Standard verification path: `./compile.sh <file>.tex` (looks inside `05_output/`)
-- Active feature: `FEAT-006` (Docling Universal Extraction Engine) — `in_progress` (evidence still unrecorded). FEAT-007 `passing`. FEAT-008 `passing`. FEAT-001–005 `passing`. FEAT-003 single-topic generation re-verified 2026-06-29 for Topic_01, Topic_02, and Topic_04 (all 6 environments used in each); multi-source stitching still pending.
+- Active feature: `FEAT-006` (Docling Universal Extraction Engine) — `in_progress` (evidence still unrecorded). FEAT-007 `passing`. FEAT-008 `passing`. FEAT-001–005 `passing`. FEAT-003 single-topic generation re-verified 2026-06-30 for Topics 01, 02, 04, 05, 10 (all 6 environments used in each); multi-source stitching still pending.
+- circuitikz installed 2026-06-30 via `tlmgr install circuitikz`; `\usepackage[american]{circuitikz}` added to `igcse_preamble.tex` for future gate diagrams.
 - Pipeline: Docling extraction → regex linker → cosine routing + Python YAML construction. Scripts: `extract_docling.py`, `link_qa.py`, `route_hybrid.py`.
 - KB structure: 10 canonical `Topic_XX_Name/` folders; `_staging/` holds 15 `*_linked.json` (w25 + 2024 papers); all w25 and 2024 papers routed.
 - KB quality: CLEAN as of 2026-06-27 (stabilization pass) — 0 missing `source_file`, 0 hallucinated YAML fields. 998 total RULE 10-compliant pairs across 10 topics (706 pre-2024 + 293 fresh 2024).
@@ -77,6 +78,31 @@
   - `./compile.sh Topic_01_Data_Representation.tex` → **PASS, exit 0**.
   - Updated `feature_list.json` with Session 017 evidence.
 - Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 final gap: generate a Topic_01 or Topic_02 worksheet (multi-source stitch — Past_Papers.md questions + mark scheme into worksheet+mark-scheme .tex).
+
+### Session 021
+
+- Date: 2026-06-30
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 10 (Boolean Logic).
+- Completed:
+  - Installed `circuitikz` via `tlmgr install circuitikz`; added `\usepackage[american]{circuitikz}` to `04_templates/igcse_preamble.tex`.
+  - Wrote `05_output/Topic_10_Boolean_Logic.tex` from scratch. Covers all syllabus 10.1/10.2/10.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×2 (NAND/NOR full-inverse rule; missing brackets in expressions), `stratbox` ×2 (gate output memory guide; show intermediate columns in exam), `errortrap` ×2 (XOR (1,1) row trap; missing rows in truth table), `scenario` ×2 (circuit from expression; expression from problem statement), `modelans` ×1 (writing expression from truth table — two-row Sum of Products worked example).
+  - Two circuitikz diagrams: 2×3 gate symbols reference (NOT/AND/OR/NAND/NOR/XOR with port shapes); logic circuit for $X=(A\text{ AND }B)\text{ OR }(\text{NOT }C)$ with wired connections.
+  - First compile failed: `circuitikz.sty` not found → installed via tlmgr. Second compile → **PASS, exit 0** (5 pages, 98539 bytes).
+  - Updated `feature_list.json` and `session-handoff.md`.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: worksheet from Past_Papers.md.
+
+### Session 020
+
+- Date: 2026-06-30
+- Goal: FEAT-003 — generate comprehensive, exam-focused class notes for Topic 05 (The Internet and Its Uses).
+- Completed:
+  - Wrote `05_output/Topic_05_The_Internet_and_Its_Uses.tex` from scratch. Covers all of syllabus 5.1/5.2/5.3 with zero hallucinated content.
+  - All 6 tcolorbox environments deployed: `learningoutcomes` (scope block at top), `critbox` ×4 (internet vs WWW conflation, pharming vs phishing key difference, cookies not viruses, firewall vs proxy examiner distinction), `stratbox` ×4 (HTTP/HTTPS quick recall, TLS two-layer recall, blockchain exam sentence, threat-to-solution mapping), `errortrap` ×2 (missing DNS step, social engineering not hacking), `scenario` ×2 (webpage request worked example, DDoS attack narrative), `modelans` ×2 (cookie payment-details mark scheme, SSL certificate check mark scheme).
+  - Three TikZ diagrams: URL component breakdown (adjacent colour-coded boxes), DNS resolution triangle (4 labelled arrows), DDoS botnet attack (attacker → bots → web server).
+  - `./compile.sh Topic_05_The_Internet_and_Its_Uses.tex` → **PASS, exit 0** on first compilation attempt.
+  - Updated `feature_list.json` with Session 020 evidence.
+- Next best step: FEAT-006 evidence (run `extract_docling.py --file` against a QP PDF). Then FEAT-003 multi-source stitch: worksheet from Past_Papers.md.
 
 ### Session 019
 

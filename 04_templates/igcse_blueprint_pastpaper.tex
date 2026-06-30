@@ -1,0 +1,95 @@
+% ==============================================================================
+% IGCSE 0478 PAST PAPER & WORKSHEET BLUEPRINT
+% ==============================================================================
+% INSTRUCTIONS FOR CLAUDE:
+% 1. Use this structural skeleton for all generated worksheets, quizzes, and exams.
+% 2. DO NOT modify the column widths of the longtable in the Mark Scheme.
+% 3. DO NOT use commas or bare parentheses inside tcolorbox titles (e.g., stratbox).
+% 4. All question sub-parts must use the [leftmargin=*, label=(\alph*)] format.
+% 5. Append marks at the end of the question text formatted as \textit{[X marks]}.
+% ==============================================================================
+
+\input{../04_templates/igcse_preamble.tex}
+% Note: Ensure \usepackage{multirow} and \usepackage{longtable} are in the preamble
+
+\begin{document}
+
+\title{\bfseries <Document Title e.g., Week 4: Algorithm Design>\\ \large <Subtitle e.g., Topics 7 \& 10>}
+\author{IGCSE Computer Science 0478}
+\date{}
+\maketitle
+
+% ============================================================
+% SECTION: IN-CLASS WORKSHEET / EXAM PAPER
+% ============================================================
+\section*{<Section Name e.g., In-Class Worksheet>}
+
+\textbf{Time Allowed: <XX> Minutes \,|\, Total Marks: <XX>}
+
+\vspace{1em}
+
+% --- QUESTION BLOCK ---
+\noindent\textbf{Question <Number>} \hfill \textit{Source: <Optional past paper code>}
+\\
+<Optional context paragraph describing the scenario. E.g., A submersible's logging software...>
+
+\begin{enumerate}[leftmargin=*, label=(\alph*)]
+  
+  % Standard text question
+  \item <Question text detailing the problem or task.> \textit{[<X> marks]}
+  \vspace{<Provide logical vertical space for student answers, e.g., 2cm or 3cm>}
+
+  % Question with pseudocode/code block
+  \item <Question text introducing the code.> \textit{[<X> marks]}
+  \begin{lstlisting}
+<Insert Pseudocode or Code Here>
+  \end{lstlisting}
+  \vspace{2cm}
+
+  % Nested sub-questions (Roman numerals)
+  \item <Question text for a multi-part question.>
+  \begin{enumerate}[label=(\roman*), leftmargin=*, noitemsep]
+    \item <Sub-question text.> \textit{[<X> marks]}
+    \vspace{1.5cm}
+    \item <Sub-question text.> \textit{[<X> marks]}
+    \vspace{1.5cm}
+  \end{enumerate}
+
+\end{enumerate}
+
+\newpage
+
+% ============================================================
+% SECTION: MARK SCHEME
+% ============================================================
+\section*{Mark Scheme}
+
+\subsection*{Mark Scheme: <Section Name e.g., In-Class Worksheet> (Question <Number>)}
+
+% The table widths are strictly locked to perfectly span an A4 page with 2cm margins
+\begin{longtable}{@{}p{1.4cm} p{13.8cm} p{1.2cm}@{}}
+\toprule
+\textbf{Q} & \textbf{Marking Point} & \textbf{Marks} \\
+\midrule
+\endhead
+
+% --- MARK SCHEME ROW BLOCK ---
+% Note for Claude: The first argument of \multirow is the number of marking points (rows) for this specific question.
+\multirow{<Number of Marking Points>}{*}{<Question Label e.g., 1(a)>}
+ & <First marking point criteria> & 1 \\
+ & <Second marking point criteria> & 1 \\
+ & <Third marking point criteria> & 1 \\
+\midrule
+
+% --- MARK SCHEME ROW BLOCK WITH CODE/LOGIC ---
+\multirow{<Number of Marking Points>}{*}{<Question Label e.g., 1(b)>}
+ & <First criteria, e.g. Correct running TOTAL values> & 1 \\
+ & <Second criteria, e.g. Correct loop termination> & 1 \\
+\midrule
+
+% Continue adding blocks for each question part...
+
+\bottomrule
+\end{longtable}
+
+\end{document}
