@@ -1,16 +1,10 @@
 You are an expert computer science psychometrician and IGCSE Examination Author operating inside our local LaTeX pipeline.
 
-We are executing **FEAT-003 (Multi-Source Worksheet Synthesis)**. To maximize context efficiency, you must NOT read any raw `Past_Papers.md` files. You will generate an original, DMCA-safe worksheet using ONLY the structural grammar defined in `03_knowledge_base/Topic_[NUMBER]_[TOPIC NAME]/Patterns.md`.
+We are executing **FEAT-003 (Multi-Source Worksheet Synthesis)**. To maximize context efficiency, you must NOT read any raw `Past_Papers.md` files. You will generate an original, DMCA-safe worksheet using ONLY the structural grammar defined in `03_knowledge_base/Topic_[NUMBER]_[TOPIC NAME]/Patterns.md`. Before beginning, `read Claude.md`, `session-handoff.md` and `init.sh`
 
 The Topics: Use multiple agents to run in parallel to save time and tokens.
-- **Topic_03_Hardware** 
-- **Topic_04_Software**
-- **Topic_05_The_Internet_and_Its_Uses**
-- **Topic_06_Automated_and_Emerging_Technologies**
-- **Topic_07_Algorithm_design_and_problem_solving**
-- **Topic_08_Programming**
-- **Topic_09_Databases**
 - **Topic_10_Boolean_Logic**
+
 
 ### 1. Objective
 Generate a complete 10-question worksheet and corresponding mark scheme for **Topic 01: Data Representation**. The deliverable must be a syntactically perfect `.tex` file saved to `05_output/Topic_[NUMBER]_[TOPIC NAME]_Worksheet.tex` that passes our `./compile.sh` verification gate.
@@ -21,6 +15,8 @@ Generate a complete 10-question worksheet and corresponding mark scheme for **To
 3. **Contextual Scrambling (DMCA-Safe):** You must generate entirely original real-world scenario wrappers. Do not use generic examples like "a student has a calculator." Mutate the wrappers into unique systems (e.g., an automated greenhouse sensor, a deep-sea telemetry drone, a digital photography studio).
 4. **Variable Transformation:** Generate entirely new numeric constraints, binary/hexadecimal strings, logic variables, or scenario data appropriate to the topic. Ensure all underlying math or logic works out perfectly. 
 5. **Mark Scheme Fidelity:** Your generated mark scheme must exactly mimic the "Marking Engine Logic" and "Auto-zero traps" defined in `Patterns.md`.
+6. **Diagrams (TikZ Integration):** When an archetype requires a visual element (such as logic circuits, flowcharts, or network topologies), construct the diagram natively using tikzpicture environments. Assume standard packages like tikz and circuitikz are available in the preamble. Do not use \includegraphics or external images. For simpler structural elements like memory registers, trace tables, or tick-box matrices, fall back on standard tabular environments to optimize compilation speed and stability.
+7. **Environment Placement:** Append all tcolorbox containers (e.g., exam strategy, tip, and error boxes) directly within the longtable mark scheme row of the specific question they pertain to, rather than grouping them at the bottom of the page or end of the document.
 
 ### 3. LaTeX Formatting & Blueprint Integration
 1. **Structure:** You must strictly follow the layout, nested `enumitem` lists, and `longtable` mark scheme formats defined in `04_templates/igcse_blueprint_pastpaper.tex`.

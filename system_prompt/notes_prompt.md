@@ -21,6 +21,7 @@ Generate comprehensive, exam-focused class notes for the explicitly targeted top
 3. Strict Formatting: Use the exact LaTeX document structure demonstrated in `igcse_blueprint.tex`. Include `\input{../04_templates/igcse_preamble.tex}` at the absolute top of the document. Actively utilize the custom callout environments (`\begin{stratbox}`, `\begin{critbox}`, `\begin{scenario}`, `\begin{errortrap}`, `\begin{modelans}`).
 4. Pgfkeys Constraint: Never include commas or parentheses inside the bracketed title text of custom environments, as this breaks pgfkeys parsing. Use em-dashes instead.
 5. Programmatic Diagrams: Render core structural concepts using clean, native `tikzpicture` environments. Do not use `\usepackage` in the body. Use relative coordinate naming (e.g., `right=of`).
+6. Install circuittikz if required and ensure that the relevant files contain the package for future use.
 
 ### 4. Execution Phase 
 (Use Haiku Model for generation, Sonnet for Concept creation and Direction)
